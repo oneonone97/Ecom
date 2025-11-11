@@ -4,16 +4,45 @@ const fs = require('fs');
 const crypto = require('crypto');
 const logger = require('../utils/logger');
 
-// Ensure upload directories exist
-const uploadDir = path.join(__dirname, '../uploads');
+// Detect serverless environment (Vercel, AWS Lambda, etc.)
+const isServerless = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.SERVERLESS || false;
+
+// Set upload directories based on environment
+// In serverless, use /tmp (only writable location)
+// In non-serverless, use local uploads directory
+const uploadDir = isServerless 
+  ? path.join('/tmp', 'uploads')
+  : path.join(__dirname, '../uploads');
 const productImagesDir = path.join(uploadDir, 'products');
 const userAvatarsDir = path.join(uploadDir, 'avatars');
 
-[uploadDir, productImagesDir, userAvatarsDir].forEach(dir => {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-});
+// Ensure upload directories exist (only create if not serverless or if using /tmp)
+if (isServerless) {
+  // In serverless, use /tmp which should be writable
+  [uploadDir, productImagesDir, userAvatarsDir].forEach(dir => {
+    if (!fs.existsSync(dir)) {
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+      } catch (error) {
+        logger.warn(`Could not create upload directory ${dir}:`, error.message);
+      }
+    }
+  });
+  
+  // Warn that /tmp is ephemeral in serverless - files will be lost
+  logger.warn('Running in serverless environment. Uploads stored in /tmp (ephemeral). Consider using cloud storage (S3, Supabase Storage) for production.');
+} else {
+  // In non-serverless, create directories normally
+  [uploadDir, productImagesDir, userAvatarsDir].forEach(dir => {
+    if (!fs.existsSync(dir)) {
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+      } catch (error) {
+        logger.error(`Could not create upload directory ${dir}:`, error.message);
+      }
+    }
+  });
+}
 
 // Configure storage
 const storage = multer.diskStorage({
