@@ -1,0 +1,388 @@
+const logger = require('../utils/logger');
+const BaseService = require('./BaseService');
+
+class ProductService extends BaseService {
+  constructor(productRepository, cacheService) {
+    super();
+    this.productRepository = productRepository;
+    this.cacheService = cacheService;
+  }
+
+  async createProduct(productData) {
+    try {
+      // Validate product data
+      await this.validateProductData(productData);
+      
+      // Check if product name already exists in category
+      const existingProduct = await this.productRepository.findByNameAndCategory(
+        productData.name, 
+        productData.category
+      );
+      
+      if (existingProduct) {
+        throw new Error(`Product '${productData.name}' already exists in category '${productData.category}'`);
+      }
+
+      // Create product
+      const product = await this.productRepository.createProduct(productData);
+      
+      // Invalidate relevant caches
+      await this.cacheService.invalidateByPattern('products:*');
+      await this.cacheService.invalidateByPattern('categories:*');
+      
+      logger.info('Product created successfully', {
+        productId: product.id,
+        name: product.name,
+        category: product.category
+      });
+
+      return product;
+    } catch (error) {
+      logger.error('Error creating product:', error);
+      throw error;
+    }
+  }
+
+  async updateProduct(productId, updateData) {
+    try {
+      // Validate update data
+      await this.validateProductUpdateData(updateData);
+      
+      // Check if product exists
+      const existingProduct = await this.productRepository.findProductById(productId);
+      if (!existingProduct) {
+        throw new Error('Product not found');
+      }
+
+      // If name or category is being changed, check for duplicates
+      if ((updateData.name && updateData.name !== existingProduct.name) || 
+          (updateData.category && updateData.category !== existingProduct.category)) {
+        const nameToCheck = updateData.name || existingProduct.name;
+        const categoryToCheck = updateData.category || existingProduct.category;
+        
+        const duplicate = await this.productRepository.findByNameAndCategory(nameToCheck, categoryToCheck);
+        if (duplicate && duplicate.id !== parseInt(productId)) {
+          throw new Error(`Product '${nameToCheck}' already exists in category '${categoryToCheck}'`);
+        }
+      }
+
+      // Update product
+      const updatedProduct = await this.productRepository.updateProduct(productId, updateData);
+      
+      // Invalidate caches
+      await this.cacheService.invalidateProduct(productId);
+      if (updateData.category && updateData.category !== existingProduct.category) {
+        await this.cacheService.invalidateByPattern('categories:*');
+      }
+      
+      logger.info('Product updated successfully', {
+        productId: updatedProduct.id,
+        changes: Object.keys(updateData)
+      });
+
+      return updatedProduct;
+    } catch (error) {
+      logger.error('Error updating product:', error);
+      throw error;
+    }
+  }
+
+  async deleteProduct(productId) {
+    try {
+      // Check if product exists
+      const product = await this.productRepository.findProductById(productId);
+      if (!product) {
+        throw new Error('Product not found');
+      }
+
+      // Check if product is in any active orders or carts
+      const isInUse = await this.checkProductInUse(productId);
+      if (isInUse.inOrders || isInUse.inCarts) {
+        throw new Error('Cannot delete product: it is referenced in existing orders or carts');
+      }
+
+      // Soft delete or hard delete based on configuration
+      await this.productRepository.deleteProduct(productId);
+      
+      // Invalidate caches
+      await this.cacheService.invalidateProduct(productId);
+      await this.cacheService.invalidateByPattern('categories:*');
+      
+      logger.info('Product deleted successfully', {
+        productId: product.id,
+        name: product.name
+      });
+
+      return { message: 'Product deleted successfully' };
+    } catch (error) {
+      logger.error('Error deleting product:', error);
+      throw error;
+    }
+  }
+
+  async getProductWithRecommendations(productId, userId = null) {
+    try {
+      const product = await this.productRepository.findProductById(productId);
+      if (!product) {
+        throw new Error('Product not found');
+      }
+
+      // Get related products (same category, exclude current product)
+      const relatedProducts = await this.productRepository.findProductsWithPagination(
+        1, 4, 
+        { 
+          category: product.category,
+          excludeId: productId 
+        }
+      );
+
+      // Get user's view history if authenticated
+      let viewHistory = [];
+      if (userId) {
+        await this.recordProductView(userId, productId);
+        viewHistory = await this.getUserViewHistory(userId, 4);
+      }
+
+      return {
+        product,
+        relatedProducts: relatedProducts.rows,
+        viewHistory
+      };
+    } catch (error) {
+      logger.error('Error getting product with recommendations:', error);
+      throw error;
+    }
+  }
+
+  async searchProducts(searchTerm, filters = {}, options = {}) {
+    try {
+      const { page = 1, limit = 10, sortBy = 'relevance' } = options;
+      
+      // Enhanced search with multiple criteria
+      const searchResults = await this.productRepository.searchProducts(searchTerm, {
+        ...filters,
+        limit: parseInt(limit),
+        offset: (parseInt(page) - 1) * parseInt(limit),
+        sortBy
+      });
+
+      // Log search for analytics
+      logger.info('Product search performed', {
+        searchTerm,
+        filters,
+        resultCount: searchResults.count,
+        page,
+        limit
+      });
+
+      return {
+        products: searchResults.rows,
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages: Math.ceil(searchResults.count / limit),
+          totalItems: searchResults.count,
+          itemsPerPage: parseInt(limit)
+        },
+        searchTerm,
+        filters
+      };
+    } catch (error) {
+      logger.error('Error searching products:', error);
+      throw error;
+    }
+  }
+
+  async updateStock(productId, newStock, reason = 'manual_adjustment') {
+    try {
+      const product = await this.productRepository.findProductById(productId);
+      if (!product) {
+        throw new Error('Product not found');
+      }
+
+      const oldStock = product.stock;
+      const updatedProduct = await this.productRepository.updateProduct(productId, { 
+        stock: newStock 
+      });
+
+      // Log stock change
+      logger.info('Stock updated', {
+        productId,
+        productName: product.name,
+        oldStock,
+        newStock,
+        difference: newStock - oldStock,
+        reason
+      });
+
+      // Check for low stock alert
+      if (newStock <= 5 && newStock > 0) {
+        logger.warn('Low stock alert', {
+          productId,
+          productName: product.name,
+          stock: newStock
+        });
+      }
+
+      // Check for out of stock
+      if (newStock === 0) {
+        logger.warn('Product out of stock', {
+          productId,
+          productName: product.name
+        });
+      }
+
+      // Invalidate product cache
+      await this.cacheService.invalidateProduct(productId);
+
+      return updatedProduct;
+    } catch (error) {
+      logger.error('Error updating stock:', error);
+      throw error;
+    }
+  }
+
+  async getFeaturedProducts(limit = 8) {
+    try {
+      const cacheKey = this.cacheService.generateKey('products', 'featured', limit);
+      
+      return await this.cacheService.getOrSet(
+        cacheKey,
+        async () => {
+          return await this.productRepository.getFeaturedProducts(limit);
+        },
+        600 // 10 minutes cache
+      );
+    } catch (error) {
+      logger.error('Error getting featured products:', error);
+      throw error;
+    }
+  }
+
+  async getProductsByCategory(category, page = 1, limit = 12, sortBy = 'name') {
+    try {
+      const cacheKey = this.cacheService.generateKey(
+        'products', 'category', category, page, limit, sortBy
+      );
+      
+      return await this.cacheService.getOrSet(
+        cacheKey,
+        async () => {
+          const result = await this.productRepository.findProductsWithPagination(
+            page, limit, 
+            { category, sortBy }
+          );
+          
+          return {
+            products: result.rows,
+            pagination: {
+              currentPage: page,
+              totalPages: Math.ceil(result.count / limit),
+              totalItems: result.count,
+              itemsPerPage: limit
+            },
+            category
+          };
+        },
+        300 // 5 minutes cache
+      );
+    } catch (error) {
+      logger.error('Error getting products by category:', error);
+      throw error;
+    }
+  }
+
+  // Private helper methods
+  async validateProductData(productData) {
+    const requiredFields = ['name', 'description', 'price', 'category', 'stock'];
+    const missingFields = requiredFields.filter(field => !productData[field] && productData[field] !== 0);
+    
+    if (missingFields.length > 0) {
+      throw new Error(`Missing required fields: ${missingFields.join(', ')}`);
+    }
+
+    if (productData.price <= 0) {
+      throw new Error('Price must be greater than 0');
+    }
+
+    if (productData.stock < 0) {
+      throw new Error('Stock cannot be negative');
+    }
+
+    if (productData.name.length > 100) {
+      throw new Error('Product name cannot exceed 100 characters');
+    }
+
+    if (productData.description.length > 500) {
+      throw new Error('Product description cannot exceed 500 characters');
+    }
+  }
+
+  async validateProductUpdateData(updateData) {
+    if (updateData.price !== undefined && updateData.price <= 0) {
+      throw new Error('Price must be greater than 0');
+    }
+
+    if (updateData.stock !== undefined && updateData.stock < 0) {
+      throw new Error('Stock cannot be negative');
+    }
+
+    if (updateData.name && updateData.name.length > 100) {
+      throw new Error('Product name cannot exceed 100 characters');
+    }
+
+    if (updateData.description && updateData.description.length > 500) {
+      throw new Error('Product description cannot exceed 500 characters');
+    }
+  }
+
+  async checkProductInUse(productId) {
+    // This would typically check order items and cart items
+    // For now, return false to allow deletion
+    // TODO: Implement actual checks when OrderItem and CartItem models are available
+    return {
+      inOrders: false,
+      inCarts: false
+    };
+  }
+
+  async recordProductView(userId, productId) {
+    try {
+      // Store in cache for quick access, could also store in database
+      const viewKey = this.cacheService.generateKey('user_views', userId);
+      const views = await this.cacheService.get(viewKey) || [];
+      
+      // Add to front, remove duplicates, keep last 10
+      const updatedViews = [productId, ...views.filter(id => id !== productId)].slice(0, 10);
+      
+      await this.cacheService.set(viewKey, updatedViews, 86400); // 24 hours
+    } catch (error) {
+      logger.error('Error recording product view:', error);
+      // Don't throw - this is not critical
+    }
+  }
+
+  async getUserViewHistory(userId, limit = 10) {
+    try {
+      const viewKey = this.cacheService.generateKey('user_views', userId);
+      const viewedProductIds = await this.cacheService.get(viewKey) || [];
+      
+      if (viewedProductIds.length === 0) {
+        return [];
+      }
+
+      // Get products for viewed IDs
+      const products = await Promise.all(
+        viewedProductIds.slice(0, limit).map(id => 
+          this.productRepository.findProductById(id)
+        )
+      );
+      
+      return products.filter(Boolean); // Remove null products
+    } catch (error) {
+      logger.error('Error getting user view history:', error);
+      return [];
+    }
+  }
+}
+
+module.exports = ProductService;
