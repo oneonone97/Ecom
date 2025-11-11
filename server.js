@@ -65,7 +65,9 @@ app.use(express.static('public'));
 
 // Serve uploaded files from the 'uploads' directory
 const path = require('path');
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+if (process.env.NODE_ENV !== 'production') {
+  app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+}
 
 // Request logging middleware
 app.use(requestLogger);
