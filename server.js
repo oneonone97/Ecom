@@ -24,11 +24,18 @@ try {
 }
 
 // Initialize Redis (non-blocking for development)
+// In serverless environments, don't exit on Redis failure - use fallback instead
+const isServerless = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.SERVERLESS || false;
 initializeRedis().catch(error => {
-  if (process.env.NODE_ENV === 'production') {
+  if (isServerless) {
+    // In serverless, gracefully degrade without Redis (use in-memory fallback)
+    logger.warn('Redis unavailable in serverless environment, using in-memory fallback:', error.message);
+  } else if (process.env.NODE_ENV === 'production') {
+    // In non-serverless production, Redis is critical - exit
     logger.error('Failed to initialize Redis in production:', error);
     process.exit(1);
   } else {
+    // In development, continue without Redis
     logger.warn('Failed to initialize Redis in development:', error.message);
   }
 });

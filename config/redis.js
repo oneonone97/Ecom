@@ -1,9 +1,18 @@
 const redis = require('redis');
 const logger = require('../utils/logger');
 
+// Detect serverless environment (Vercel, AWS Lambda, etc.)
+const isServerless = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.SERVERLESS || false;
+
 let redisClient = null;
 
 const initializeRedis = async () => {
+  // In serverless, if no Redis URL is provided, skip initialization and use fallback
+  if (isServerless && !process.env.REDIS_URL) {
+    logger.warn('Redis URL not configured in serverless environment. Using in-memory fallback.');
+    return null;
+  }
+
   try {
     const redisConfig = {
       url: process.env.REDIS_URL || 'redis://localhost:6379'
@@ -42,11 +51,12 @@ const initializeRedis = async () => {
   } catch (error) {
     logger.error('Failed to connect to Redis:', error);
     
-    // In development, continue without Redis (use memory fallback)
-    if (process.env.NODE_ENV !== 'production') {
-      logger.warn('Running without Redis in development mode');
+    // In serverless or development, continue without Redis (use memory fallback)
+    if (isServerless || process.env.NODE_ENV !== 'production') {
+      logger.warn(`Running without Redis in ${isServerless ? 'serverless' : 'development'} mode. Using in-memory fallback.`);
       return null;
     } else {
+      // In non-serverless production, Redis is critical
       throw error;
     }
   }
@@ -54,6 +64,11 @@ const initializeRedis = async () => {
 
 const getRedisClient = () => {
   if (!redisClient) {
+    // In serverless or development, return null instead of throwing
+    // This allows graceful fallback to in-memory storage
+    if (isServerless || process.env.NODE_ENV !== 'production') {
+      return null;
+    }
     throw new Error('Redis client not initialized. Call initializeRedis() first.');
   }
   return redisClient;
