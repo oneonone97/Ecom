@@ -74,7 +74,6 @@ app.use(express.static('public'));
 // Note: In serverless environments, files in /tmp are ephemeral and not suitable for serving
 // For production serverless, use cloud storage (S3, Supabase Storage) instead
 const path = require('path');
-const isServerless = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.SERVERLESS || false;
 if (process.env.NODE_ENV !== 'production' && !isServerless) {
   app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 }
