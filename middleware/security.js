@@ -38,6 +38,9 @@ const applySecurityMiddleware = (app) => {
     stripIgnoreTagBody: ['script'], // Remove script tags and their content
   }));
 
+  // Detect serverless environment (Vercel, AWS Lambda, etc.)
+  const isServerless = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.SERVERLESS || false;
+
   // Rate limiting with different limits for different endpoints
   const createRateLimit = (windowMs, max, message) => rateLimit({
     windowMs,
@@ -52,6 +55,12 @@ const applySecurityMiddleware = (app) => {
     },
     standardHeaders: true,
     legacyHeaders: false,
+    // When trust proxy is enabled in Express, req.ip will automatically use X-Forwarded-For
+    // This keyGenerator ensures we use the correct IP in both serverless and non-serverless environments
+    keyGenerator: (req) => {
+      // req.ip is automatically populated from X-Forwarded-For when trust proxy is enabled
+      return req.ip || req.connection.remoteAddress || 'unknown';
+    }
   });
 
   // General rate limiting

@@ -45,6 +45,12 @@ const crypto = require('crypto');
 // Initialize Express app
 const app = express();
 
+// Enable trust proxy for serverless environments (Vercel, AWS Lambda, etc.)
+// This is required for express-rate-limit to work correctly behind proxies
+if (isServerless) {
+  app.set('trust proxy', 1); // Trust first proxy (Vercel)
+}
+
 // Middleware to generate a unique session ID for each request
 app.use((req, res, next) => {
   req.sessionId = req.headers['x-session-id'] || crypto.randomBytes(16).toString('hex');
