@@ -8,13 +8,20 @@ let sequelize = null;
 
 const getSequelize = () => {
   if (!sequelize) {
-    const dialect = process.env.DB_DIALECT || 'sqlite';
-    const databaseUrl = process.env.DATABASE_URL || 'sqlite::memory:';
-    
     // In serverless environments, SQLite won't work (read-only filesystem)
-    // Require PostgreSQL for serverless deployments
+    // Require PostgreSQL for serverless deployments - check this FIRST before setting defaults
     if (isServerless) {
-      if (dialect === 'sqlite' || databaseUrl.startsWith('sqlite:')) {
+      // In serverless, DATABASE_URL is required and must be PostgreSQL
+      if (!process.env.DATABASE_URL) {
+        throw new Error(
+          'DATABASE_URL is required in serverless environments (Vercel/Lambda). ' +
+          'Please set DATABASE_URL environment variable to a PostgreSQL connection string. ' +
+          'Example: postgresql://user:password@host:5432/database'
+        );
+      }
+      
+      // Check if trying to use SQLite in serverless
+      if (process.env.DATABASE_URL.startsWith('sqlite:') || process.env.DB_DIALECT === 'sqlite') {
         throw new Error(
           'SQLite is not supported in serverless environments (Vercel/Lambda). ' +
           'Please configure PostgreSQL by setting DATABASE_URL to a PostgreSQL connection string. ' +
@@ -22,19 +29,39 @@ const getSequelize = () => {
         );
       }
       
-      if (!databaseUrl || databaseUrl === 'sqlite::memory:') {
+      // Ensure we're using PostgreSQL
+      if (!process.env.DATABASE_URL.startsWith('postgres://') && !process.env.DATABASE_URL.startsWith('postgresql://')) {
         throw new Error(
-          'DATABASE_URL is required in serverless environments. ' +
-          'Please set DATABASE_URL environment variable to a PostgreSQL connection string.'
+          'DATABASE_URL must be a PostgreSQL connection string in serverless environments. ' +
+          'Current value does not appear to be PostgreSQL. ' +
+          'Example: postgresql://user:password@host:5432/database'
         );
       }
-      
-      // Ensure we're using PostgreSQL
-      if (dialect !== 'postgres' && !databaseUrl.startsWith('postgres://') && !databaseUrl.startsWith('postgresql://')) {
-        console.warn(
-          'Warning: DATABASE_URL does not appear to be a PostgreSQL connection string. ' +
-          'Serverless environments require PostgreSQL.'
-        );
+    }
+    
+    // Set defaults only for non-serverless environments
+    const databaseUrl = process.env.DATABASE_URL || (isServerless ? null : 'sqlite::memory:');
+    
+    // Final check - if we still don't have a database URL, throw error
+    if (!databaseUrl) {
+      throw new Error(
+        'DATABASE_URL is required. Please set DATABASE_URL environment variable.'
+      );
+    }
+    
+    // Auto-detect dialect from DATABASE_URL if not explicitly set
+    let dialect = process.env.DB_DIALECT;
+    if (!dialect) {
+      if (databaseUrl.startsWith('postgres://') || databaseUrl.startsWith('postgresql://')) {
+        dialect = 'postgres';
+      } else if (databaseUrl.startsWith('sqlite:')) {
+        dialect = 'sqlite';
+      } else if (isServerless) {
+        // In serverless, default to postgres if we can't detect
+        dialect = 'postgres';
+      } else {
+        // In non-serverless, default to sqlite
+        dialect = 'sqlite';
       }
     }
     
