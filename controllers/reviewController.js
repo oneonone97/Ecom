@@ -1,6 +1,4 @@
-const Review = require('../models/Review');
-const Product = require('../models/Product');
-const User = require('../models/User');
+const db = require('../utils/database');
 const logger = require('../utils/logger');
 
 /**

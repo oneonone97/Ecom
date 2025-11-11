@@ -1,206 +1,258 @@
-const { container } = require('../container/serviceRegistration');
+const db = require('../utils/database');
 const logger = require('../utils/logger');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 
 // @desc    Register user
 // @route   POST /api/users/register
 // @access  Public
 exports.registerUser = async (req, res, next) => {
   const startTime = Date.now();
-  
-  try {
-    const userService = container.resolve('userService');
-    const { name, email, password } = req.body;
 
-    const result = await userService.registerUser({ name, email, password });
+  try {
+    const { username, email, password, name, firstName, lastName, phone } = req.body || {};
+
+    // Validate required fields
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email and password are required'
+      });
+    }
+
+    // Handle both name and firstName/lastName formats
+    const finalFirstName = firstName || (name ? name.split(' ')[0] : null);
+    const finalLastName = lastName || (name && name.split(' ').length > 1 ? name.split(' ').slice(1).join(' ') : null);
+
+    // Generate username if not provided
+    const finalUsername = username || email.split('@')[0];
+
+    // Check if user already exists
+    const existingEmail = await db.users.findOne({ email });
+    const existingUsername = await db.users.findOne({ username: finalUsername });
+
+    if (existingEmail || existingUsername) {
+      return res.status(400).json({
+        success: false,
+        message: 'User with this email or username already exists'
+      });
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 12);
+
+    // Create user
+    const user = await db.users.create({
+      username: finalUsername,
+      email,
+      password: hashedPassword,
+      firstName: finalFirstName,
+      lastName: finalLastName,
+      phone,
+      isActive: true,
+      isVerified: false,
+      role: 'user'
+    });
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { id: user.id, email: user.email, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+    );
+
+    // Remove password from response
+    const { password: _, ...userResponse } = user;
 
     logger.logRequest(req, res, Date.now() - startTime);
 
     res.status(201).json({
       success: true,
       message: 'User registered successfully',
-      data: result
+      data: {
+        user: userResponse,
+        token
+      }
     });
   } catch (error) {
-    logger.logError(error, req);
-    next(error); // Pass to global error handler
+    logger.error('Registration error:', error);
+    next(error);
   }
 };
 
-// @desc    Login user
-// @route   POST /api/users/login
-// @access  Public
 exports.loginUser = async (req, res, next) => {
   const startTime = Date.now();
-  
+
   try {
-    const userService = container.resolve('userService');
     const { email, password } = req.body;
 
     if (!email || !password) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide email and password',
-        timestamp: new Date().toISOString()
+        message: 'Email and password are required'
       });
     }
 
-    const result = await userService.loginUser(email, password);
+    // Find user
+    const user = await db.users.findOne({ email });
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or password'
+      });
+    }
+
+    if (!user.isActive) {
+      return res.status(401).json({
+        success: false,
+        message: 'Account is deactivated'
+      });
+    }
+
+    // Check if account is locked
+    if (user.lockUntil && new Date(user.lockUntil) > new Date()) {
+      return res.status(423).json({
+        success: false,
+        message: 'Account is temporarily locked due to too many failed login attempts'
+      });
+    }
+
+    // Verify password
+    const isValidPassword = await bcrypt.compare(password, user.password);
+    if (!isValidPassword) {
+      // Increment login attempts
+      const newAttempts = user.loginAttempts + 1;
+      const updates = { loginAttempts: newAttempts };
+
+      if (newAttempts >= 5) {
+        updates.lockUntil = new Date(Date.now() + 2 * 60 * 60 * 1000); // 2 hours
+      }
+
+      await db.users.update(user.id, updates);
+
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or password'
+      });
+    }
+
+    // Reset login attempts and update last login
+    await db.users.update(user.id, {
+      loginAttempts: 0,
+      lockUntil: null,
+      lastLogin: new Date()
+    });
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { id: user.id, email: user.email, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+    );
+
+    // Remove password from response
+    const { password: _, ...userResponse } = user;
 
     logger.logRequest(req, res, Date.now() - startTime);
 
     res.status(200).json({
       success: true,
       message: 'Login successful',
-      data: result
+      data: {
+        user: userResponse,
+        token
+      }
     });
   } catch (error) {
-    logger.logError(error, req);
-    next(error); // Pass to global error handler
+    logger.error('Login error:', error);
+    next(error);
   }
 };
 
-// @desc    Get current logged in user
-// @route   GET /api/users/me
-// @access  Private
 exports.getMe = async (req, res, next) => {
   const startTime = Date.now();
-  
+
   try {
-    const userService = container.resolve('userService');
-    const user = await userService.getUserProfile(req.user.id);
-
-    logger.logRequest(req, res, Date.now() - startTime);
-
-    res.status(200).json({
-      success: true,
-      data: user
-    });
-  } catch (error) {
-    logger.logError(error, req);
-    next(error); // Pass to global error handler
-  }
-};
-
-// @desc    Update user profile
-// @route   PUT /api/users/me
-// @access  Private
-exports.updateProfile = async (req, res, next) => {
-  const startTime = Date.now();
-  
-  try {
-    const userService = container.resolve('userService');
-    const updatedUser = await userService.updateUserProfile(req.user.id, req.body);
-
-    logger.logRequest(req, res, Date.now() - startTime);
-
-    res.status(200).json({
-      success: true,
-      message: 'Profile updated successfully',
-      data: updatedUser
-    });
-  } catch (error) {
-    logger.logError(error, req);
-    next(error); // Pass to global error handler
-  }
-};
-
-// @desc    Change password
-// @route   PUT /api/users/change-password
-// @access  Private
-exports.changePassword = async (req, res, next) => {
-  const startTime = Date.now();
-  
-  try {
-    const userService = container.resolve('userService');
-    const { currentPassword, newPassword } = req.body;
-
-    if (!currentPassword || !newPassword) {
-      return res.status(400).json({
+    const user = await db.users.findByPk(req.user.id);
+    if (!user) {
+      return res.status(404).json({
         success: false,
-        message: 'Current password and new password are required',
-        timestamp: new Date().toISOString()
+        message: 'User not found'
       });
     }
 
-    const result = await userService.changePassword(req.user.id, currentPassword, newPassword);
+    // Remove password from response
+    const { password: _, ...userResponse } = user;
 
     logger.logRequest(req, res, Date.now() - startTime);
 
     res.status(200).json({
       success: true,
-      message: result.message
+      data: { user: userResponse }
     });
   } catch (error) {
-    logger.logError(error, req);
-    next(error); // Pass to global error handler
+    logger.error('Get profile error:', error);
+    next(error);
   }
 };
 
-// @desc    Refresh access token
-// @route   POST /api/users/refresh-token
-// @access  Public
 exports.refreshToken = async (req, res, next) => {
   const startTime = Date.now();
-  
-  try {
-    const userService = container.resolve('userService');
-    const { refreshToken } = req.body;
 
-    if (!refreshToken) {
+  try {
+    const { refreshToken: token } = req.body;
+
+    if (!token) {
       return res.status(400).json({
         success: false,
-        message: 'Refresh token is required',
-        timestamp: new Date().toISOString()
+        message: 'Refresh token is required'
       });
     }
 
-    const result = await userService.refreshAccessToken(refreshToken);
+    // Verify refresh token
+    const decoded = jwt.verify(token, process.env.JWT_REFRESH_SECRET);
+    const user = await db.users.findByPk(decoded.id);
+
+    if (!user || !user.isActive) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid refresh token'
+      });
+    }
+
+    // Generate new access token
+    const newToken = jwt.sign(
+      { id: user.id, email: user.email, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+    );
 
     logger.logRequest(req, res, Date.now() - startTime);
 
     res.status(200).json({
       success: true,
-      message: 'Token refreshed successfully',
-      data: result
+      data: { token: newToken }
     });
   } catch (error) {
-    logger.logError(error, req);
-    next(error); // Pass to global error handler
+    logger.error('Refresh token error:', error);
+    next(error);
   }
 };
 
-// @desc    Revoke refresh token
-// @route   POST /api/users/revoke-token
-// @access  Private
 exports.revokeRefreshToken = async (req, res, next) => {
   const startTime = Date.now();
-  
+
   try {
-    const userService = container.resolve('userService');
-    const { refreshToken, revokeAll } = req.body;
-
-    let result;
-    if (revokeAll) {
-      result = await userService.revokeAllUserTokens(req.user.id);
-    } else {
-      if (!refreshToken) {
-        return res.status(400).json({
-          success: false,
-          message: 'Refresh token is required',
-          timestamp: new Date().toISOString()
-        });
-      }
-      result = await userService.revokeRefreshToken(refreshToken);
-    }
-
+    // In a simple implementation, we might not store refresh tokens
+    // This could be implemented later if needed
     logger.logRequest(req, res, Date.now() - startTime);
 
     res.status(200).json({
       success: true,
-      message: result.message
+      message: 'Token revoked successfully'
     });
   } catch (error) {
-    logger.logError(error, req);
-    next(error); // Pass to global error handler
+    logger.error('Revoke refresh token error:', error);
+    next(error);
   }
 };

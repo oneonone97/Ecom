@@ -1,12 +1,14 @@
 /**
  * PostgreSQL Connection Utility using 'postgres' library
- * 
+ *
  * This provides a direct SQL query interface for Supabase/PostgreSQL.
- * Use this for raw SQL queries when Sequelize ORM is not needed.
- * 
+ * Now used as the primary database interface after removing Sequelize.
+ *
  * Usage:
  * const sql = require('./utils/postgres');
  * const users = await sql`SELECT * FROM "Users" LIMIT 10`;
+ *
+ * Also provides helper functions for common operations.
  */
 
 require('dotenv').config();
@@ -47,5 +49,80 @@ process.on('SIGTERM', async () => {
   process.exit(0);
 });
 
+// Helper functions for common database operations
+const dbHelpers = {
+  // Build WHERE clause from object
+  buildWhereClause: (conditions, params = []) => {
+    if (!conditions || Object.keys(conditions).length === 0) {
+      return { where: '', params };
+    }
+
+    const clauses = [];
+    const values = [...params];
+
+    for (const [key, value] of Object.entries(conditions)) {
+      if (value === null || value === undefined) {
+        clauses.push(`"${key}" IS NULL`);
+      } else if (Array.isArray(value)) {
+        const placeholders = value.map(() => `$${values.length + 1}`).join(', ');
+        clauses.push(`"${key}" IN (${placeholders})`);
+        values.push(...value);
+      } else {
+        clauses.push(`"${key}" = $${values.length + 1}`);
+        values.push(value);
+      }
+    }
+
+    return {
+      where: `WHERE ${clauses.join(' AND ')}`,
+      params: values
+    };
+  },
+
+  // Build ORDER BY clause
+  buildOrderBy: (orderBy) => {
+    if (!orderBy) return '';
+
+    if (typeof orderBy === 'string') {
+      return `ORDER BY ${orderBy}`;
+    }
+
+    if (Array.isArray(orderBy)) {
+      const clauses = orderBy.map(clause => {
+        if (typeof clause === 'string') return clause;
+        if (Array.isArray(clause) && clause.length === 2) {
+          return `"${clause[0]}" ${clause[1].toUpperCase()}`;
+        }
+        return '';
+      }).filter(Boolean);
+
+      return clauses.length > 0 ? `ORDER BY ${clauses.join(', ')}` : '';
+    }
+
+    return '';
+  },
+
+  // Build LIMIT and OFFSET
+  buildLimitOffset: (limit, offset) => {
+    let sql = '';
+    if (limit && limit > 0) {
+      sql += ` LIMIT ${parseInt(limit)}`;
+    }
+    if (offset && offset > 0) {
+      sql += ` OFFSET ${parseInt(offset)}`;
+    }
+    return sql;
+  },
+
+  // Execute raw query with optional transaction
+  executeQuery: async (query, params = [], transaction = null) => {
+    if (transaction) {
+      return await transaction.unsafe(query, params);
+    }
+    return await sql.unsafe(query, params);
+  }
+};
+
 module.exports = sql;
+module.exports.helpers = dbHelpers;
 

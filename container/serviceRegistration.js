@@ -1,12 +1,14 @@
 const { container, createFactory } = require('./DIContainer');
 
 // Import repositories
-const UserRepository = require('../repositories/UserRepository');
-const ProductRepository = require('../repositories/ProductRepository');
-const CartRepository = require('../repositories/CartRepository');
-const OrderRepository = require('../repositories/OrderRepository');
+// Repositories removed - now using direct database access
+// const UserRepository = require('../repositories/UserRepository');
+// const ProductRepository = require('../repositories/ProductRepository');
+// const CartRepository = require('../repositories/CartRepository');
+// const OrderRepository = require('../repositories/OrderRepository');
 
 // Import services
+// Services - keeping these but they may need updates
 const UserService = require('../services/UserService');
 const CartService = require('../services/CartService');
 const CacheService = require('../services/CacheService');
@@ -27,11 +29,11 @@ const PaymentVerifier = require('../services/PaymentVerifier');
 // Import utils
 const logger = require('../utils/logger');
 
-// Register repositories as singletons
-container.registerSingleton('userRepository', createFactory(UserRepository));
-container.registerSingleton('productRepository', createFactory(ProductRepository));
-container.registerSingleton('cartRepository', createFactory(CartRepository));
-container.registerSingleton('orderRepository', createFactory(OrderRepository));
+// Repositories removed - services now use direct database access
+// container.registerSingleton('userRepository', createFactory(UserRepository));
+// container.registerSingleton('productRepository', createFactory(ProductRepository));
+// container.registerSingleton('cartRepository', createFactory(CartRepository));
+// container.registerSingleton('orderRepository', createFactory(OrderRepository));
 
 // Register core services
 container.registerSingleton('cacheService', createFactory(CacheService));
@@ -50,12 +52,12 @@ container.registerInstance('paymentGatewayFactory', PaymentGatewayFactory);
 container.registerSingleton('orderValidator', createFactory(OrderValidator));
 container.registerSingleton('paymentVerifier', createFactory(PaymentVerifier));
 
-// Register business services with their dependencies
-container.registerSingleton('userService', createFactory(UserService), ['userRepository']);
-container.registerSingleton('cartService', createFactory(CartService), ['cartRepository', 'productRepository']);
-container.registerSingleton('productService', createFactory(ProductService), ['productRepository', 'cacheService']);
-container.registerSingleton('inventoryService', createFactory(InventoryService), ['productRepository', 'cacheService', 'notificationService']);
-container.registerSingleton('orderService', createFactory(OrderService), ['orderRepository', 'cartService', 'productRepository', 'paymentService', 'notificationService']);
+// Register business services (repositories removed)
+container.registerSingleton('userService', createFactory(UserService), []);
+container.registerSingleton('cartService', createFactory(CartService), []);
+container.registerSingleton('productService', createFactory(ProductService), ['cacheService']);
+container.registerSingleton('inventoryService', createFactory(InventoryService), ['cacheService', 'notificationService']);
+container.registerSingleton('orderService', createFactory(OrderService), ['cartService', 'paymentService', 'notificationService']);
 
 // Register checkout service with dependencies
 container.registerSingleton('checkoutService', createFactory(CheckoutService), [
@@ -63,8 +65,7 @@ container.registerSingleton('checkoutService', createFactory(CheckoutService), [
   'orderService',
   'cartService',
   'orderValidator',
-  'paymentVerifier',
-  'productRepository'
+  'paymentVerifier'
 ]);
 
 // Register utilities
@@ -73,10 +74,11 @@ container.registerInstance('logger', logger);
 // Helper function to get all services
 const getServices = () => ({
   // Repositories
-  userRepository: container.resolve('userRepository'),
-  productRepository: container.resolve('productRepository'),
-  cartRepository: container.resolve('cartRepository'),
-  orderRepository: container.resolve('orderRepository'),
+  // Repositories removed - using direct database access
+  // userRepository: container.resolve('userRepository'),
+  // productRepository: container.resolve('productRepository'),
+  // cartRepository: container.resolve('cartRepository'),
+  // orderRepository: container.resolve('orderRepository'),
   
   // Core services
   cacheService: container.resolve('cacheService'),
@@ -97,26 +99,20 @@ const getServices = () => ({
 // Validation function to ensure all services are properly registered
 const validateContainer = () => {
   const requiredServices = [
-    // Repositories
-    'userRepository',
-    'productRepository', 
-    'cartRepository',
-    'orderRepository',
-    
     // Core services
     'cacheService',
     'notificationService',
     'paymentService',
-    
+
     // Payment gateways
     'phonepeGateway',
     'razorpayGateway',
     'paymentGatewayFactory',
-    
+
     // Validation and verification
     'orderValidator',
     'paymentVerifier',
-    
+
     // Business services
     'userService',
     'cartService',
@@ -124,7 +120,7 @@ const validateContainer = () => {
     'inventoryService',
     'orderService',
     'checkoutService',
-    
+
     // Utilities
     'logger'
   ];

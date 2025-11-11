@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const User = require('../models/User');
+const db = require('../utils/database');
 const logger = require('../utils/logger');
 const { getTokenBlacklist } = require('../config/redis');
 

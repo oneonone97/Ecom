@@ -1,7 +1,6 @@
 const logger = require('../utils/logger');
-const sequelize = require('../config/database');
-const { Order, OrderItem } = require('../models/Order');
-const Product = require('../models/Product');
+const db = require('../utils/database');
+// Removed model imports - now using direct database access
 
 /**
  * CheckoutService
@@ -16,15 +15,14 @@ class CheckoutService {
     orderService,
     cartService,
     orderValidator,
-    paymentVerifier,
-    productRepository
+    paymentVerifier
   ) {
     this.paymentGatewayFactory = paymentGatewayFactory;
     this.orderService = orderService;
     this.cartService = cartService;
     this.orderValidator = orderValidator;
     this.paymentVerifier = paymentVerifier;
-    this.productRepository = productRepository;
+    // Product operations now handled by OrderService
   }
 
   /**

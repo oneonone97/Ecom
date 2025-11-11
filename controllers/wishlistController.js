@@ -1,6 +1,4 @@
-const { Wishlist, WishlistItem } = require('../models/Wishlist');
-const Product = require('../models/Product');
-const User = require('../models/User');
+const db = require('../utils/database');
 const logger = require('../utils/logger');
 const { getImageGallery } = require('../utils/imageUtils');
 

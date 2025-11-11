@@ -121,7 +121,7 @@ exports.createProduct = async (req, res, next) => {
   try {
     const productRepository = container.resolve('productRepository');
     const cacheService = container.resolve('cacheService');
-    const Category = require('../models/Category');
+    // Using db.categories instead
     
     // Prepare product data
     const productData = { ...req.body };
@@ -216,7 +216,7 @@ exports.updateProduct = async (req, res, next) => {
   try {
     const productRepository = container.resolve('productRepository');
     const cacheService = container.resolve('cacheService');
-    const Category = require('../models/Category');
+    // Using db.categories instead
     
     const productId = req.params.id;
     const updateData = { ...req.body };

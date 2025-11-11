@@ -1,13 +1,13 @@
 const logger = require('../utils/logger');
 const BaseService = require('./BaseService');
-const { Op } = require('sequelize');
+const db = require('../utils/database');
 
 class InventoryService extends BaseService {
-  constructor(productRepository, cacheService, notificationService) {
+  constructor(cacheService, notificationService) {
     super();
-    this.productRepository = productRepository;
     this.cacheService = cacheService;
     this.notificationService = notificationService;
+    // No repository dependency - using direct database access
     
     // Inventory thresholds
     this.LOW_STOCK_THRESHOLD = parseInt(process.env.LOW_STOCK_THRESHOLD) || 10;
@@ -17,17 +17,17 @@ class InventoryService extends BaseService {
 
   async updateStock(productId, newStock, reason = 'manual_adjustment', orderId = null) {
     try {
-      const product = await this.productRepository.findProductById(productId);
+      const product = await db.products.findByPk(productId);
       if (!product) {
         throw new Error('Product not found');
       }
 
       const oldStock = product.stock;
       const stockDifference = newStock - oldStock;
-      
+
       // Update product stock
-      const updatedProduct = await this.productRepository.updateProduct(productId, { 
-        stock: newStock 
+      const updatedProduct = await db.products.update(productId, {
+        stock: newStock
       });
 
       // Log inventory movement
@@ -324,7 +324,7 @@ class InventoryService extends BaseService {
 
   async getStockByCategory() {
     try {
-      const Category = require('../models/Category');
+      // Using db.categories instead
       const Product = this.productRepository.model;
       
       // Use raw query with proper JOIN for better compatibility

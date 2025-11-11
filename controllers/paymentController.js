@@ -1,6 +1,5 @@
 const paymentService = require('../services/PaymentService');
-const { Order } = require('../models/Order');
-const User = require('../models/User');
+const db = require('../utils/database');
 const emailService = require('../services/emailService');
 const logger = require('../utils/logger');
 
@@ -66,15 +65,16 @@ const createCheckoutSession = async (req, res, next) => {
     logger.info(`Creating checkout session for order ${orderId}`);
 
     // Get order with items
-    const order = await Order.findOne({
-      where: {
-        id: orderId,
-        userId: req.user.id
-      },
-      include: [{
-        association: 'items'
-      }]
-    });
+    const order = await db.orders.findByPk(orderId);
+    if (!order || order.userId !== req.user.id) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+
+    // Get order items
+    const orderItems = await db.orderItems.findAll({ where: { orderId } });
 
     if (!order) {
       return res.status(404).json({
@@ -129,14 +129,12 @@ const verifyPayment = async (req, res, next) => {
 
     if (session.status === 'paid') {
       // Find and update order
-      const order = await Order.findOne({
-        where: {
-          userId: req.user.id,
-          orderNotes: {
-            [require('sequelize').Op.like]: `%${sessionId}%`
-          }
-        }
-      });
+      const orders = await db.orders.findAll();
+      const order = orders.find(o =>
+        o.userId === req.user.id &&
+        o.orderNotes &&
+        o.orderNotes.includes(sessionId)
+      );
 
       if (order && order.paymentStatus !== 'paid') {
         await order.update({

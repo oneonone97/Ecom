@@ -55,12 +55,9 @@ const applySecurityMiddleware = (app) => {
     },
     standardHeaders: true,
     legacyHeaders: false,
+    // Use the built-in key generator that properly handles IPv4/IPv6
     // When trust proxy is enabled in Express, req.ip will automatically use X-Forwarded-For
-    // This keyGenerator ensures we use the correct IP in both serverless and non-serverless environments
-    keyGenerator: (req) => {
-      // req.ip is automatically populated from X-Forwarded-For when trust proxy is enabled
-      return req.ip || req.connection.remoteAddress || 'unknown';
-    }
+    keyGenerator: rateLimit.ipKeyGenerator
   });
 
   // General rate limiting

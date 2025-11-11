@@ -6,7 +6,7 @@ const logger = require('./utils/logger');
 const requestLogger = require('./middleware/requestLogger');
 const errorHandler = require('./middleware/errorHandler');
 const applySecurityMiddleware = require('./middleware/security');
-const sequelize = require('./config/database');
+// Database connection removed - now using raw SQL
 const { initializeContainer } = require('./container/serviceRegistration');
 const { protect, logout } = require('./middleware/auth');
 const { getCSRFToken } = require('./middleware/csrf');
@@ -161,19 +161,21 @@ app.post('/api/logout', protect, logout);
 // Error handler middleware (must be after routes)
 app.use(errorHandler);
 
-// Wrap Express app with serverless-http for serverless deployment (Vercel, AWS Lambda, etc.)
-const serverlessHandler = serverless(app, {
-  binary: ['image/*', 'application/pdf', 'application/octet-stream']
-});
-
-// For local development, you can still listen on a port
-if (require.main === module) {
-  const PORT = process.env.PORT || 5000;
-  app.listen(PORT, () => {
-    logger.info(`Server running on port ${PORT}`);
-  });
-}
-
-// Export both the app (for local development/testing) and serverless handler (for deployment)
+// Export the app for local development and testing
 module.exports = app;
-module.exports.handler = serverlessHandler;
+
+// For serverless deployment (Vercel, AWS Lambda, etc.), export the serverless handler
+if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.SERVERLESS) {
+  const serverlessHandler = serverless(app, {
+    binary: ['image/*', 'application/pdf', 'application/octet-stream']
+  });
+  module.exports.handler = serverlessHandler;
+} else {
+  // For local development, listen on a port
+  if (require.main === module) {
+    const PORT = process.env.PORT || 5000;
+    app.listen(PORT, () => {
+      logger.info(`Server running on port ${PORT}`);
+    });
+  }
+}

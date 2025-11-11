@@ -1,44 +1,98 @@
 const BaseService = require('./BaseService');
-const CartRepository = require('../repositories/CartRepository');
-const ProductRepository = require('../repositories/ProductRepository');
+const db = require('../utils/database');
 const logger = require('../utils/logger');
 
 class CartService extends BaseService {
-  constructor(
-    cartRepository = new CartRepository(),
-    productRepository = new ProductRepository()
-  ) {
-    super(cartRepository);
-    this.cartRepository = cartRepository;
-    this.productRepository = productRepository;
-    this.logger = logger; // Add this line to fix the undefined logger
+  constructor() {
+    super();
+    // No repository dependencies - using direct database access
   }
 
   async getUserCart(userId) {
     try {
-      let cart = await this.cartRepository.getCartWithCalculations(userId);
-      
-      if (!cart) {
+      // Get cart with items and product details using JOIN
+      const cartData = await db.carts.findWithRelations(
+        { userId },
+        [
+          {
+            type: 'LEFT_JOIN',
+            table: 'CartItems',
+            localKey: 'id',
+            foreignKey: 'cartId'
+          },
+          {
+            type: 'LEFT_JOIN',
+            table: 'Products',
+            localKey: 'CartItems.productId',
+            foreignKey: 'id'
+          }
+        ]
+      );
+
+      if (!cartData || cartData.length === 0) {
         // Create empty cart if none exists
-        const [newCart] = await this.cartRepository.findOrCreateUserCart(userId);
-        cart = {
-          ...newCart.toJSON(),
+        const newCart = await db.carts.create({ userId });
+        return {
+          ...newCart,
           items: [],
           totalItems: 0,
           totalPrice: 0
         };
       }
 
-      return cart;
+      // Aggregate cart data
+      const cart = cartData[0];
+      const items = [];
+      let totalItems = 0;
+      let totalPrice = 0;
+
+      // Group cart items by product
+      const itemMap = new Map();
+
+      cartData.forEach(row => {
+        if (row.productId && row.name) {
+          const itemKey = row.productId;
+          if (!itemMap.has(itemKey)) {
+            itemMap.set(itemKey, {
+              id: row.productId,
+              name: row.name,
+              price_paise: row.price_paise,
+              stock: row.stock,
+              imageUrl: row.imageUrl,
+              quantity: row.quantity || 0,
+              subtotal: 0
+            });
+          }
+          const item = itemMap.get(itemKey);
+          item.quantity += row.quantity || 0;
+          item.subtotal = item.quantity * (row.price_paise || 0);
+        }
+      });
+
+      // Convert map to array and calculate totals
+      items.push(...itemMap.values());
+      totalItems = items.reduce((sum, item) => sum + item.quantity, 0);
+      totalPrice = items.reduce((sum, item) => sum + item.subtotal, 0);
+
+      return {
+        id: cart.id,
+        userId: cart.userId,
+        items,
+        totalItems,
+        totalPrice,
+        createdAt: cart.createdAt,
+        updatedAt: cart.updatedAt
+      };
     } catch (error) {
-      throw this.handleError(error, 'getUserCart');
+      logger.error('Error getting user cart:', error);
+      throw error;
     }
   }
 
   async addItemToCart(userId, productId, quantity) {
     try {
-        // First verify product exists
-        const product = await this.productRepository.findById(productId);
+        // First verify product exists and has stock
+        const product = await db.products.findByPk(productId);
         if (!product) {
             const error = new Error(`Product with ID ${productId} not found`);
             error.statusCode = 404;
@@ -46,33 +100,53 @@ class CartService extends BaseService {
             throw error;
         }
 
+        if (product.stock < quantity) {
+            const error = new Error(`Insufficient stock. Available: ${product.stock}, Requested: ${quantity}`);
+            error.statusCode = 400;
+            error.code = 'INSUFFICIENT_STOCK';
+            throw error;
+        }
+
         // Find or create cart
-        let cart = await this.cartRepository.findByUserId(userId);
-        
-        // Create new cart if it doesn't exist
+        let cart = await db.carts.findOne({ userId });
+
         if (!cart) {
-            cart = await this.cartRepository.create({
-                userId
-            });
+            cart = await db.carts.create({ userId });
             logger.info('New cart created', { userId, cartId: cart.id });
         }
 
-        // Use CartItem to add/update item
-        const price = product.price_paise;
-        await this.cartRepository.addItemToCart(cart.id, productId, quantity, price);
-        
+        // Check if item already exists in cart
+        const existingItem = await db.cartItems.findOne({
+          cartId: cart.id,
+          productId
+        });
+
+        if (existingItem) {
+            // Update existing item
+            await db.cartItems.update(existingItem.id, {
+                quantity: existingItem.quantity + quantity,
+                price_paise: product.price_paise
+            });
+        } else {
+            // Add new item
+            await db.cartItems.create({
+                cartId: cart.id,
+                productId,
+                quantity,
+                price_paise: product.price_paise
+            });
+        }
+
         logger.info('Cart item added/updated', {
             userId,
             cartId: cart.id,
             productId,
             quantity,
-            price
+            price_paise: product.price_paise
         });
 
-        // Return the full cart with Product associations
-        const fullCart = await this.cartRepository.getCartWithCalculations(userId);
-        
-        return fullCart;
+        // Return the full cart with calculations
+        return await this.getUserCart(userId);
 
     } catch (error) {
         logger.error('Error in addItemToCart:', {
@@ -99,87 +173,119 @@ class CartService extends BaseService {
         throw new Error('Quantity must be at least 1');
       }
 
-      return await this.cartRepository.executeInTransaction(async (transaction) => {
-        // Find cart item
-        const cartItem = await this.cartRepository.findCartItem(itemId, userId, transaction);
-        if (!cartItem) {
-          throw new Error('Cart item not found');
-        }
+      // Find cart item with product details
+      const cartItem = await db.cartItems.findWithRelations(
+        { id: itemId },
+        [
+          {
+            type: 'INNER_JOIN',
+            table: 'Carts',
+            localKey: 'cartId',
+            foreignKey: 'id'
+          },
+          {
+            type: 'INNER_JOIN',
+            table: 'Products',
+            localKey: 'productId',
+            foreignKey: 'id'
+          }
+        ]
+      );
 
-        // Check stock availability
-        if (cartItem.Product.stock < quantity) {
-          throw new Error(`Only ${cartItem.Product.stock} items available in stock`);
-        }
+      if (!cartItem || cartItem.length === 0 || cartItem[0].userId !== userId) {
+        throw new Error('Cart item not found');
+      }
 
-        // Update quantity
-        await this.cartRepository.updateCartItemQuantity(itemId, quantity, userId, transaction);
+      const item = cartItem[0];
 
-        logger.info('Cart item quantity updated', {
-          userId,
-          itemId,
-          oldQuantity: cartItem.quantity,
-          newQuantity: quantity,
-          productName: cartItem.Product.name,
-          timestamp: new Date().toISOString()
-        });
+      // Check stock availability
+      if (item.stock < quantity) {
+        throw new Error(`Only ${item.stock} items available in stock`);
+      }
 
-        // Return the full updated cart
-        return await this.cartRepository.getCartWithCalculations(userId, transaction);
+      // Update quantity
+      await db.cartItems.update(itemId, { quantity });
+
+      logger.info('Cart item quantity updated', {
+        userId,
+        itemId,
+        oldQuantity: item.quantity,
+        newQuantity: quantity,
+        productName: item.name,
+        timestamp: new Date().toISOString()
       });
+
+      // Return the full updated cart
+      return await this.getUserCart(userId);
     } catch (error) {
-      logger.logError(error, null);
-      throw this.handleError(error, 'updateCartItemQuantity');
+      logger.error('Error updating cart item quantity:', error);
+      throw error;
     }
   }
 
   async removeCartItem(userId, itemId) {
     try {
-      const cartItem = await this.cartRepository.findCartItem(itemId, userId);
-      if (!cartItem) {
+      // Find cart item with cart ownership verification
+      const cartItem = await db.cartItems.findWithRelations(
+        { id: itemId },
+        [{
+          type: 'INNER_JOIN',
+          table: 'Carts',
+          localKey: 'cartId',
+          foreignKey: 'id'
+        }]
+      );
+
+      if (!cartItem || cartItem.length === 0 || cartItem[0].userId !== userId) {
         throw new Error('Cart item not found');
       }
 
-      await this.cartRepository.removeCartItem(itemId, userId);
+      await db.cartItems.destroy(itemId);
 
       logger.info('Item removed from cart', {
         userId,
         itemId,
-        productName: cartItem.Product.name,
-        quantity: cartItem.quantity,
+        productName: cartItem[0].name,
+        quantity: cartItem[0].quantity,
         timestamp: new Date().toISOString()
       });
 
       // Return the full updated cart
-      return await this.cartRepository.getCartWithCalculations(userId);
+      return await this.getUserCart(userId);
     } catch (error) {
-      logger.logError(error, null);
-      throw this.handleError(error, 'removeCartItem');
+      logger.error('Error removing cart item:', error);
+      throw error;
     }
   }
 
   async clearUserCart(userId) {
     try {
-      return await this.cartRepository.executeInTransaction(async (transaction) => {
-        const cart = await this.cartRepository.findUserCart(userId, true);
-        if (!cart) {
-          throw new Error('Cart not found');
-        }
+      // Find user's cart
+      const cart = await db.carts.findOne({ userId });
+      if (!cart) {
+        throw new Error('Cart not found');
+      }
 
-        const itemCount = cart.items ? cart.items.length : 0;
-        
-        await this.cartRepository.clearUserCart(userId, transaction);
+      // Get count of items before deletion
+      const itemCount = await db.cartItems.count({ cartId: cart.id });
 
-        logger.info('Cart cleared', {
-          userId,
-          itemsRemoved: itemCount,
-          timestamp: new Date().toISOString()
-        });
+      // Delete all cart items (we'd need to implement a batch delete method)
+      // For now, we'll need to get all items and delete them one by one
+      const items = await db.cartItems.findAll({ where: { cartId: cart.id } });
+      for (const item of items) {
+        await db.cartItems.destroy(item.id);
+      }
 
-        return { message: 'Cart cleared successfully' };
+      logger.info('Cart cleared', {
+        userId,
+        itemsRemoved: itemCount,
+        timestamp: new Date().toISOString()
       });
+
+      return { message: 'Cart cleared successfully' };
     } catch (error) {
-      logger.logError(error, null);
-      throw this.handleError(error, 'clearUserCart');
+      logger.error('Error clearing cart:', error);
+      throw error;
     }
   }
 

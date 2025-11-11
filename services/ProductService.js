@@ -1,11 +1,12 @@
 const logger = require('../utils/logger');
 const BaseService = require('./BaseService');
+const db = require('../utils/database');
 
 class ProductService extends BaseService {
-  constructor(productRepository, cacheService) {
+  constructor(cacheService) {
     super();
-    this.productRepository = productRepository;
     this.cacheService = cacheService;
+    // No repository dependency - using direct database access
   }
 
   async createProduct(productData) {
