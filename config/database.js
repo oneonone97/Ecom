@@ -65,30 +65,13 @@ const getSequelize = () => {
       }
     }
     
-    const { Sequelize } = require('sequelize');
-    
-    // Build sequelize config
-    const sequelizeConfig = {
-      dialect: dialect,
-      logging: false
-    };
-    
-    // Explicitly require and set pg as dialectModule when using PostgreSQL
-    // This ensures Sequelize uses the pg module even in serverless environments
+    // For PostgreSQL, require pg module BEFORE requiring Sequelize
+    // This ensures pg is available when Sequelize tries to load the dialect
+    let pgModule = null;
     if (dialect === 'postgres' || databaseUrl.startsWith('postgres://') || databaseUrl.startsWith('postgresql://')) {
       try {
-        const pg = require('pg');
-        sequelizeConfig.dialectModule = pg;
-        
-        // Also set dialectOptions for SSL if needed (for Supabase, etc.)
-        if (databaseUrl.includes('supabase.co') || process.env.DB_SSL === 'true') {
-          sequelizeConfig.dialectOptions = {
-            ssl: {
-              require: true,
-              rejectUnauthorized: false
-            }
-          };
-        }
+        // Require pg module early to ensure it's loaded before Sequelize initialization
+        pgModule = require('pg');
       } catch (error) {
         console.error('Failed to load pg module:', error);
         throw new Error('Please install pg package manually: npm install pg. Error: ' + error.message);
@@ -99,6 +82,30 @@ const getSequelize = () => {
         'PostgreSQL is required in serverless environments. ' +
         'Please configure DATABASE_URL with a PostgreSQL connection string.'
       );
+    }
+    
+    const { Sequelize } = require('sequelize');
+    
+    // Build sequelize config
+    const sequelizeConfig = {
+      dialect: dialect,
+      logging: false
+    };
+    
+    // Set pg as dialectModule when using PostgreSQL
+    // This ensures Sequelize uses the pg module even in serverless environments
+    if (pgModule) {
+      sequelizeConfig.dialectModule = pgModule;
+      
+      // Also set dialectOptions for SSL if needed (for Supabase, etc.)
+      if (databaseUrl.includes('supabase.co') || process.env.DB_SSL === 'true') {
+        sequelizeConfig.dialectOptions = {
+          ssl: {
+            require: true,
+            rejectUnauthorized: false
+          }
+        };
+      }
     }
     
     sequelize = new Sequelize(
