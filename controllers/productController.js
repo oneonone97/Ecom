@@ -337,13 +337,16 @@ exports.deleteProduct = async (req, res, next) => {
 // @access  Public
 exports.getCategories = async (req, res, next) => {
   const startTime = Date.now();
-  
+
   try {
-    const productRepository = container.resolve('productRepository');
+    const db = require('../utils/database');
     // const cacheService = container.resolve('cacheService');
-    
+
     // Bypassing cache for debugging
-    const categories = await productRepository.getCategories();
+    const categories = await db.categories.findAll({
+      where: { isActive: true },
+      orderBy: 'name ASC'
+    });
 
     /*
     const categories = await cacheService.getOrSet(

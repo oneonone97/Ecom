@@ -13,28 +13,43 @@ class ProductService extends BaseService {
     try {
       // Validate product data
       await this.validateProductData(productData);
-      
+
       // Check if product name already exists in category
-      const existingProduct = await this.productRepository.findByNameAndCategory(
-        productData.name, 
-        productData.category
-      );
-      
+      const existingProduct = await db.products.findOne({
+        where: {
+          name: productData.name,
+          categoryId: productData.categoryId
+        }
+      });
+
       if (existingProduct) {
-        throw new Error(`Product '${productData.name}' already exists in category '${productData.category}'`);
+        throw new Error(`Product '${productData.name}' already exists in this category`);
       }
 
+      // Prepare product data for database
+      const dbProductData = {
+        name: productData.name,
+        description: productData.description,
+        price_paise: productData.price * 100, // Convert to paise
+        stock: productData.stock,
+        categoryId: productData.categoryId,
+        imageUrl: productData.imageUrl || null,
+        isActive: productData.isActive !== undefined ? productData.isActive : true
+      };
+
       // Create product
-      const product = await this.productRepository.createProduct(productData);
-      
+      const product = await db.products.create(dbProductData);
+
       // Invalidate relevant caches
-      await this.cacheService.invalidateByPattern('products:*');
-      await this.cacheService.invalidateByPattern('categories:*');
-      
+      if (this.cacheService) {
+        await this.cacheService.invalidateByPattern('products:*');
+        await this.cacheService.invalidateByPattern('categories:*');
+      }
+
       logger.info('Product created successfully', {
         productId: product.id,
         name: product.name,
-        category: product.category
+        categoryId: product.categoryId
       });
 
       return product;
@@ -50,30 +65,47 @@ class ProductService extends BaseService {
       await this.validateProductUpdateData(updateData);
       
       // Check if product exists
-      const existingProduct = await this.productRepository.findProductById(productId);
+      const existingProduct = await db.products.findByPk(productId);
       if (!existingProduct) {
         throw new Error('Product not found');
       }
 
       // If name or category is being changed, check for duplicates
-      if ((updateData.name && updateData.name !== existingProduct.name) || 
-          (updateData.category && updateData.category !== existingProduct.category)) {
+      if ((updateData.name && updateData.name !== existingProduct.name) ||
+          (updateData.categoryId && updateData.categoryId !== existingProduct.categoryId)) {
         const nameToCheck = updateData.name || existingProduct.name;
-        const categoryToCheck = updateData.category || existingProduct.category;
-        
-        const duplicate = await this.productRepository.findByNameAndCategory(nameToCheck, categoryToCheck);
+        const categoryToCheck = updateData.categoryId || existingProduct.categoryId;
+
+        const duplicate = await db.products.findOne({
+          where: {
+            name: nameToCheck,
+            categoryId: categoryToCheck
+          }
+        });
         if (duplicate && duplicate.id !== parseInt(productId)) {
-          throw new Error(`Product '${nameToCheck}' already exists in category '${categoryToCheck}'`);
+          throw new Error(`Product '${nameToCheck}' already exists in this category`);
         }
       }
 
+      // Prepare update data for database
+      const dbUpdateData = {};
+      if (updateData.name !== undefined) dbUpdateData.name = updateData.name;
+      if (updateData.description !== undefined) dbUpdateData.description = updateData.description;
+      if (updateData.price !== undefined) dbUpdateData.price_paise = updateData.price * 100;
+      if (updateData.stock !== undefined) dbUpdateData.stock = updateData.stock;
+      if (updateData.categoryId !== undefined) dbUpdateData.categoryId = updateData.categoryId;
+      if (updateData.imageUrl !== undefined) dbUpdateData.imageUrl = updateData.imageUrl;
+      if (updateData.isActive !== undefined) dbUpdateData.isActive = updateData.isActive;
+
       // Update product
-      const updatedProduct = await this.productRepository.updateProduct(productId, updateData);
+      const updatedProduct = await db.products.update(productId, dbUpdateData);
       
       // Invalidate caches
-      await this.cacheService.invalidateProduct(productId);
-      if (updateData.category && updateData.category !== existingProduct.category) {
-        await this.cacheService.invalidateByPattern('categories:*');
+      if (this.cacheService) {
+        await this.cacheService.invalidateProduct(productId);
+        if (updateData.categoryId && updateData.categoryId !== existingProduct.categoryId) {
+          await this.cacheService.invalidateByPattern('categories:*');
+        }
       }
       
       logger.info('Product updated successfully', {
@@ -294,11 +326,22 @@ class ProductService extends BaseService {
 
   // Private helper methods
   async validateProductData(productData) {
-    const requiredFields = ['name', 'description', 'price', 'category', 'stock'];
+    const requiredFields = ['name', 'description', 'price', 'categoryId', 'stock'];
     const missingFields = requiredFields.filter(field => !productData[field] && productData[field] !== 0);
-    
+
     if (missingFields.length > 0) {
       throw new Error(`Missing required fields: ${missingFields.join(', ')}`);
+    }
+
+    // Validate category exists
+    if (productData.categoryId) {
+      const category = await db.categories.findOne({
+        where: { id: productData.categoryId, isActive: true }
+      });
+
+      if (!category) {
+        throw new Error(`Category with ID ${productData.categoryId} not found. Please create categories first or use a valid category ID.`);
+      }
     }
 
     if (productData.price <= 0) {
@@ -319,6 +362,17 @@ class ProductService extends BaseService {
   }
 
   async validateProductUpdateData(updateData) {
+    // Validate category exists if being updated
+    if (updateData.categoryId) {
+      const category = await db.categories.findOne({
+        where: { id: updateData.categoryId, isActive: true }
+      });
+
+      if (!category) {
+        throw new Error(`Category with ID ${updateData.categoryId} not found. Please create categories first or use a valid category ID.`);
+      }
+    }
+
     if (updateData.price !== undefined && updateData.price <= 0) {
       throw new Error('Price must be greater than 0');
     }

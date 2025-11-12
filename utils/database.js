@@ -5,10 +5,10 @@ const sql = require('./postgres');
  * Provides basic CRUD operations for all tables with SQL injection protection
  */
 class Database {
-  constructor(tableName, primaryKey = 'id', allowedColumns = []) {
+  constructor(tableName, primaryKey = 'id', allowedColumns = null) {
     this.tableName = tableName;
     this.primaryKey = primaryKey;
-    this.allowedColumns = allowedColumns || this.getDefaultColumns();
+    this.allowedColumns = (allowedColumns && allowedColumns.length > 0) ? allowedColumns : this.getDefaultColumns();
   }
 
   // Default column whitelists for each table
@@ -16,7 +16,7 @@ class Database {
     const defaults = {
       'Users': ['id', 'username', 'email', 'password', 'firstName', 'lastName', 'phone', 'avatar', 'isActive', 'isVerified', 'role', 'lastLogin', 'loginAttempts', 'lockUntil', 'emailVerificationToken', 'emailVerificationExpires', 'passwordResetToken', 'passwordResetExpires', 'createdAt', 'updatedAt'],
       'Products': ['id', 'name', 'description', 'price_paise', 'stock', 'categoryId', 'imageUrl', 'isActive', 'weight_grams', 'dimensions', 'sku', 'tags', 'createdAt', 'updatedAt'],
-      'Categories': ['id', 'name', 'description', 'imageUrl', 'isActive', 'parentId', 'createdAt', 'updatedAt'],
+      'Categories': ['id', 'name', 'slug', 'description', 'parentId', 'image', 'isActive', 'sortOrder', 'productCount', 'metaTitle', 'metaDescription', 'metaKeywords', 'createdAt', 'updatedAt'],
       'Carts': ['id', 'userId', 'createdAt', 'updatedAt'],
       'CartItems': ['id', 'cartId', 'productId', 'quantity', 'price_paise', 'createdAt', 'updatedAt'],
       'Orders': ['id', 'userId', 'totalAmount', 'status', 'shippingAddress', 'paymentMethod', 'paymentStatus', 'phonepe_merchant_transaction_id', 'phonepe_transaction_id', 'razorpay_payment_id', 'razorpay_order_id', 'createdAt', 'updatedAt'],
