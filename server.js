@@ -58,13 +58,49 @@ app.use((req, res, next) => {
   next();
 });
 
-// CORS configuration
+// CORS configuration - Environment-based origin management
 const corsOptions = {
-  origin: process.env.NODE_ENV === 'production' 
-    ? process.env.FRONTEND_URL 
-    : 'http://localhost:5173',
-  credentials: true
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+
+    // Get allowed origins from environment variable or use defaults
+    const allowedOriginsEnv = process.env.ALLOWED_ORIGINS || '';
+    const allowedOrigins = allowedOriginsEnv.split(',').filter(Boolean);
+
+    // Add default development origins if in development
+    if (process.env.NODE_ENV !== 'production') {
+      allowedOrigins.push('http://localhost:5173', 'http://localhost:3000', 'http://localhost:8080');
+    }
+
+    // Check if origin is in allowed list
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    // Additional pattern matching for dynamic subdomains
+    const corsPatterns = process.env.CORS_PATTERNS || '';
+    const patterns = corsPatterns.split(',').filter(Boolean);
+
+    for (const pattern of patterns) {
+      try {
+        const regex = new RegExp(pattern);
+        if (regex.test(origin)) {
+          return callback(null, true);
+        }
+      } catch (error) {
+        // Invalid regex pattern, skip
+        console.warn(`Invalid CORS pattern: ${pattern}`);
+      }
+    }
+
+    return callback(new Error(`Origin ${origin} not allowed by CORS policy`));
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Session-Id', 'X-CSRF-Token']
 };
+
 // Handle preflight requests for all routes
 app.options('*', cors(corsOptions));
 app.use(cors(corsOptions));
