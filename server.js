@@ -70,7 +70,7 @@ const corsOptions = {
 
     // Add default development origins if in development
     if (process.env.NODE_ENV !== 'production') {
-      allowedOrigins.push('http://localhost:5173', 'http://localhost:3000', 'http://localhost:8080');
+      allowedOrigins.push('https://www.notavailable.co.in');
     }
 
     // Check if origin is in allowed list
