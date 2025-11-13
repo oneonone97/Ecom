@@ -1,5 +1,8 @@
 const { container } = require('../container/serviceRegistration');
 const logger = require('../utils/logger');
+const { uploadImage, deleteImage, isConfigured } = require('../utils/supabaseStorage');
+const fs = require('fs');
+const path = require('path');
 
 // @desc    Get all products with caching
 // @route   GET /api/products
@@ -160,9 +163,48 @@ exports.createProduct = async (req, res, next) => {
       delete productData.category;
     }
     
-    // Handle image upload
-    if (req.fileInfo && req.fileInfo.url) {
-      productData.image_url = req.fileInfo.url;
+    // Handle image upload to Supabase Storage
+    if (req.file) {
+      try {
+        // Check if Supabase Storage is configured
+        if (!isConfigured()) {
+          logger.warn('Supabase Storage not configured, skipping image upload');
+          // Don't fail the request, just skip image upload
+        } else {
+          // Read the uploaded file
+          const fileBuffer = fs.readFileSync(req.file.path);
+          const bucketName = process.env.SUPABASE_STORAGE_BUCKET || 'products';
+
+          // Generate unique file path for the product
+          const productId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          const fileExtension = path.extname(req.file.originalname).toLowerCase();
+          const filePath = `products/${productId}/main${fileExtension}`;
+
+          // Upload to Supabase Storage
+          const publicUrl = await uploadImage(
+            fileBuffer,
+            bucketName,
+            filePath,
+            req.file.mimetype
+          );
+
+          // Store the Supabase URL in database
+          productData.image_url = publicUrl;
+
+          logger.info('Product image uploaded to Supabase', {
+            productName: productData.name,
+            filePath,
+            publicUrl
+          });
+
+          // Clean up local temp file
+          fs.unlinkSync(req.file.path);
+        }
+      } catch (uploadError) {
+        logger.error('Failed to upload product image to Supabase:', uploadError);
+        // Don't fail the entire request, just log the error
+        // The product will be created without an image
+      }
     }
     
     // Convert price from rupees to paise
@@ -255,9 +297,51 @@ exports.updateProduct = async (req, res, next) => {
       delete updateData.category;
     }
     
-    // Handle image upload
-    if (req.fileInfo && req.fileInfo.url) {
-      updateData.image_url = req.fileInfo.url;
+    // Handle image upload to Supabase Storage
+    if (req.file) {
+      try {
+        // Check if Supabase Storage is configured
+        if (!isConfigured()) {
+          logger.warn('Supabase Storage not configured, skipping image upload');
+        } else {
+          // Get existing product to potentially delete old image
+          const existingProduct = await productRepository.findProductById(productId);
+
+          // Read the uploaded file
+          const fileBuffer = fs.readFileSync(req.file.path);
+          const bucketName = process.env.SUPABASE_STORAGE_BUCKET || 'products';
+
+          // Generate unique file path for the product
+          const fileExtension = path.extname(req.file.originalname).toLowerCase();
+          const filePath = `products/${productId}/main${fileExtension}`;
+
+          // Upload to Supabase Storage
+          const publicUrl = await uploadImage(
+            fileBuffer,
+            bucketName,
+            filePath,
+            req.file.mimetype
+          );
+
+          // Store the Supabase URL in database
+          updateData.image_url = publicUrl;
+
+          logger.info('Product image updated in Supabase', {
+            productId,
+            filePath,
+            publicUrl
+          });
+
+          // Note: We could delete the old image here if needed, but for now we'll keep it
+          // to avoid breaking any existing references
+
+          // Clean up local temp file
+          fs.unlinkSync(req.file.path);
+        }
+      } catch (uploadError) {
+        logger.error('Failed to upload product image to Supabase:', uploadError);
+        // Don't fail the entire request, just log the error
+      }
     }
     
     // Convert price from rupees to paise if provided
@@ -309,12 +393,49 @@ exports.updateProduct = async (req, res, next) => {
 // @access  Private/Admin
 exports.deleteProduct = async (req, res, next) => {
   const startTime = Date.now();
-  
+
   try {
     const productRepository = container.resolve('productRepository');
     const cacheService = container.resolve('cacheService');
-    
+
     const productId = req.params.id;
+
+    // Get product details before deletion to handle image cleanup
+    const product = await productRepository.findProductById(productId);
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found'
+      });
+    }
+
+    // Handle image deletion from Supabase Storage
+    if (product.imageUrl && product.imageUrl.includes('supabase.co')) {
+      try {
+        if (isConfigured()) {
+          // Extract file path from Supabase URL
+          const url = new URL(product.imageUrl);
+          const pathParts = url.pathname.split('/');
+          // Supabase Storage URL format: /storage/v1/object/public/{bucket}/{path}
+          if (pathParts.length >= 6 && pathParts[1] === 'storage' && pathParts[2] === 'v1' && pathParts[3] === 'object' && pathParts[4] === 'public') {
+            const bucketName = pathParts[5];
+            const filePath = pathParts.slice(6).join('/'); // Everything after bucket name
+
+            await deleteImage(bucketName, filePath);
+            logger.info('Product image deleted from Supabase', {
+              productId,
+              bucketName,
+              filePath
+            });
+          }
+        }
+      } catch (imageDeleteError) {
+        logger.error('Failed to delete product image from Supabase:', imageDeleteError);
+        // Don't fail the product deletion if image deletion fails
+      }
+    }
+
+    // Delete the product
     await productRepository.deleteProduct(productId);
 
     // Invalidate all product-related caches

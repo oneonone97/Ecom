@@ -38,7 +38,7 @@ exports.protect = async (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     // Find user and validate existence and active status
-    const user = await User.findByPk(decoded.id);
+    const user = await db.users.findByPk(decoded.id);
     
     if (!user) {
       logger.logSecurity('Access attempt with token for non-existent user', {

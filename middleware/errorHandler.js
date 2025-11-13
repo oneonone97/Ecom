@@ -125,17 +125,6 @@ const errorHandler = (err, req, res, next) => {
     errorCode = 'TOKEN_EXPIRED';
   }
 
-  // SQLite specific errors
-  else if (err.name === 'SqliteError') {
-    statusCode = 500;
-    message = 'Database operation failed';
-    errorCode = 'DATABASE_ERROR';
-    if (err.code === 'SQLITE_CONSTRAINT') {
-      statusCode = 400;
-      message = 'Database constraint violation';
-      errorCode = 'CONSTRAINT_VIOLATION';
-    }
-  }
 
   // Rate limit errors
   else if (err.statusCode === 429) {

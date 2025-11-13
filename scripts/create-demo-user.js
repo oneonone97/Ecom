@@ -3,36 +3,27 @@
  * Usage: node scripts/create-demo-user.js
  */
 
-const sequelize = require('../config/database');
-const User = require('../models/User');
+const db = require('../utils/database');
 const logger = require('../utils/logger');
+const bcrypt = require('bcryptjs');
 
 /**
  * Create demo user
  */
 async function createDemoUser() {
   try {
-    // Connect to database
-    await sequelize.authenticate();
-    logger.info('Database connection established');
-
-    // Sync models
-    await sequelize.sync();
-    logger.info('Database synchronized');
-
     // Demo user credentials
     const demoData = {
       name: 'Demo User',
       email: 'demo@example.com',
       password: 'demo123',
       role: 'user',
-      isActive: true
+      isActive: true,
+      isVerified: false
     };
 
     // Check if demo user already exists
-    const existingUser = await User.findOne({
-      where: { email: demoData.email }
-    });
+    const existingUser = await db.users.findOne({ email: demoData.email });
 
     if (existingUser) {
       logger.warn(`Demo user already exists: ${demoData.email}`);
@@ -45,8 +36,25 @@ async function createDemoUser() {
       process.exit(0);
     }
 
-    // Create demo user
-    const demoUser = await User.create(demoData);
+    // Hash the password
+    const saltRounds = 12; // Same as UserService
+    const hashedPassword = await bcrypt.hash(demoData.password, saltRounds);
+
+    // Create demo user (matching actual Supabase schema)
+    const userData = {
+      name: demoData.name,
+      email: demoData.email.toLowerCase().trim(),
+      password: hashedPassword,
+      role: demoData.role,
+      isActive: demoData.isActive,
+      loginAttempts: 0,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    console.log('Creating user with data:', userData);
+
+    const demoUser = await db.users.create(userData);
 
     logger.info('Demo user created successfully', {
       id: demoUser.id,

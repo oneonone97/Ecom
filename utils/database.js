@@ -14,8 +14,8 @@ class Database {
   // Default column whitelists for each table
   getDefaultColumns() {
     const defaults = {
-      'Users': ['id', 'username', 'email', 'password', 'firstName', 'lastName', 'phone', 'avatar', 'isActive', 'isVerified', 'role', 'lastLogin', 'loginAttempts', 'lockUntil', 'emailVerificationToken', 'emailVerificationExpires', 'passwordResetToken', 'passwordResetExpires', 'createdAt', 'updatedAt'],
-      'Products': ['id', 'name', 'description', 'price_paise', 'stock', 'categoryId', 'imageUrl', 'isActive', 'weight_grams', 'dimensions', 'sku', 'tags', 'createdAt', 'updatedAt'],
+      'Users': ['id', 'name', 'email', 'password', 'role', 'isActive', 'lastLoginAt', 'loginAttempts', 'lockUntil', 'createdAt', 'updatedAt'],
+      'Products': ['id', 'name', 'description', 'price_paise', 'sale_price_paise', 'stock', 'categoryId', 'image_url', 'featured', 'is_new', 'is_sale', 'createdAt', 'updatedAt'],
       'Categories': ['id', 'name', 'slug', 'description', 'parentId', 'image', 'isActive', 'sortOrder', 'productCount', 'metaTitle', 'metaDescription', 'metaKeywords', 'createdAt', 'updatedAt'],
       'Carts': ['id', 'userId', 'createdAt', 'updatedAt'],
       'CartItems': ['id', 'cartId', 'productId', 'quantity', 'price_paise', 'createdAt', 'updatedAt'],
@@ -77,9 +77,8 @@ class Database {
 
   // Find by primary key
   async findByPk(id) {
-    const result = await sql`
-      SELECT * FROM "${this.tableName}" WHERE "${this.primaryKey}" = ${id}
-    `;
+    const query = `SELECT * FROM "${this.tableName}" WHERE "${this.primaryKey}" = $1`;
+    const result = await sql.unsafe(query, [id]);
     return result[0] || null;
   }
 
@@ -159,10 +158,8 @@ class Database {
 
   // Delete record
   async destroy(id) {
-    const result = await sql`
-      DELETE FROM "${this.tableName}" WHERE "${this.primaryKey}" = ${id}
-      RETURNING "${this.primaryKey}"
-    `;
+    const query = `DELETE FROM "${this.tableName}" WHERE "${this.primaryKey}" = $1 RETURNING "${this.primaryKey}"`;
+    const result = await sql.unsafe(query, [id]);
     return result.length > 0;
   }
 
@@ -174,12 +171,6 @@ class Database {
     return parseInt(result[0].count);
   }
 
-  // Transaction support
-  async beginTransaction() {
-    return await sql.begin(async (transaction) => {
-      return transaction;
-    });
-  }
 
   // Specialized query methods
   async findWithRelations(conditions = {}, relations = [], options = {}) {

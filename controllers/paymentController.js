@@ -144,7 +144,7 @@ const verifyPayment = async (req, res, next) => {
 
         // Send confirmation email
         await order.reload({ include: ['items'] });
-        const user = await User.findByPk(req.user.id);
+        const user = await db.users.findByPk(req.user.id);
         await emailService.sendOrderConfirmation(order, user);
 
         logger.info(`Order ${order.id} payment confirmed`);

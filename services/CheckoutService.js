@@ -1,6 +1,6 @@
 const logger = require('../utils/logger');
 const db = require('../utils/database');
-// Removed model imports - now using direct database access
+const sql = require('../utils/postgres');
 
 /**
  * CheckoutService
@@ -34,9 +34,6 @@ class CheckoutService {
    * @returns {Promise<Object>} Checkout initiation result with payment URL
    */
   async initiateCheckout(userId, checkoutData) {
-    const transaction = await sequelize.transaction();
-    let transactionCommitted = false;
-    
     try {
       const { items, address } = checkoutData;
 
@@ -63,13 +60,12 @@ class CheckoutService {
       const stockValidation = await this.orderValidator.validateStockAvailability(
         items,
         async (productId) => {
-          const product = await this.productRepository.findById(productId);
+          const product = await db.products.findByPk(productId);
           return product ? product.stock : 0;
         }
       );
 
       if (!stockValidation.isValid) {
-        await transaction.rollback();
         throw new Error(`Stock validation failed: ${stockValidation.errors.join(', ')}`);
       }
 
@@ -78,17 +74,16 @@ class CheckoutService {
       const validatedItems = [];
 
       for (const item of items) {
-        const product = await this.productRepository.findById(item.productId);
-        
+        const product = await db.products.findByPk(item.productId);
+
         if (!product) {
-          await transaction.rollback();
           throw new Error(`Product with ID ${item.productId} not found`);
         }
 
         // Use sale price if available, otherwise regular price
         const unitPricePaise = product.sale_price_paise || product.price_paise;
         const itemTotal = unitPricePaise * item.quantity;
-        
+
         validatedItems.push({
           productId: product.id,
           quantity: item.quantity,
@@ -123,57 +118,58 @@ class CheckoutService {
         }
       };
 
-      // Create database order first
-      const order = await Order.create({
-        userId: userId,
-        total_amount_paise: totalAmountPaise,
-        currency: 'INR',
-        status: 'pending',
-        payment_gateway: gatewayName,
-        phonepe_merchant_transaction_id: gatewayName === 'phonepe' ? merchantTransactionId : null,
-        receipt: receipt,
-        address_json: address
-      }, { transaction });
+      // Use transaction for atomicity
+      const result = await sql.begin(async (sql) => {
+        // Create database order first
+        const order = await db.orders.create({
+          userId: userId,
+          total_amount_paise: totalAmountPaise,
+          currency: 'INR',
+          status: 'pending',
+          payment_gateway: gatewayName,
+          phonepe_merchant_transaction_id: gatewayName === 'phonepe' ? merchantTransactionId : null,
+          receipt: receipt,
+          address_json: JSON.stringify(address) // Ensure it's stored as JSON
+        });
 
-      // Update order data with order ID
-      orderDataForGateway.orderId = order.id;
+        // Update order data with order ID
+        orderDataForGateway.orderId = order.id;
 
-      // Create order items
-      const orderItems = await Promise.all(
-        validatedItems.map(item => 
-          OrderItem.create({
-            orderId: order.id,
-            productId: item.productId,
-            quantity: item.quantity,
-            unit_price_paise: item.unitPricePaise,
-            productName: item.productName,
-            productDescription: item.productDescription
-          }, { transaction })
-        )
-      );
+        // Create order items
+        const orderItems = await Promise.all(
+          validatedItems.map(item =>
+            db.orderItems.create({
+              orderId: order.id,
+              productId: item.productId,
+              quantity: item.quantity,
+              unit_price_paise: item.unitPricePaise,
+              productName: item.productName,
+              productDescription: item.productDescription
+            })
+          )
+        );
 
-      // Update product stock
-      await Promise.all(
-        validatedItems.map(item => 
-          Product.decrement('stock', {
-            by: item.quantity,
-            where: { id: item.productId },
-            transaction
-          })
-        )
-      );
+        // Update product stock using direct SQL
+        for (const item of validatedItems) {
+          await sql`
+            UPDATE "Products"
+            SET "stock" = "stock" - ${item.quantity}, "updatedAt" = NOW()
+            WHERE "id" = ${item.productId}
+          `;
+        }
 
-      // Commit transaction before creating payment request
-      await transaction.commit();
-      transactionCommitted = true;
+        return { order, orderItems, orderDataForGateway };
+      });
+
+      const { order, orderDataForGateway: finalOrderDataForGateway } = result;
 
       // Create payment request via gateway (after transaction is committed)
       let paymentRequest;
       try {
-        paymentRequest = await gateway.createPaymentRequest(orderDataForGateway);
+        paymentRequest = await gateway.createPaymentRequest(finalOrderDataForGateway);
       } catch (gatewayError) {
         // If payment gateway fails, mark order as failed
-        await order.update({ status: 'failed' });
+        await db.orders.update(order.id, { status: 'failed' });
         logger.error('Payment gateway error after order creation', {
           orderId: order.id,
           error: gatewayError.message
@@ -183,12 +179,12 @@ class CheckoutService {
 
       // Update order with gateway-specific transaction IDs
       if (gatewayName === 'phonepe') {
-        await order.update({
+        await db.orders.update(order.id, {
           phonepe_merchant_transaction_id: merchantTransactionId,
           phonepe_transaction_id: paymentRequest.transactionId || null
         });
       } else if (gatewayName === 'razorpay') {
-        await order.update({
+        await db.orders.update(order.id, {
           razorpay_order_id: paymentRequest.orderId || null
         });
       }
@@ -213,23 +209,10 @@ class CheckoutService {
       };
 
     } catch (error) {
-      // Only rollback if transaction hasn't been committed
-      if (!transactionCommitted) {
-        try {
-          await transaction.rollback();
-        } catch (rollbackError) {
-          logger.error('Error rolling back transaction', {
-            error: rollbackError.message,
-            originalError: error.message
-          });
-        }
-      }
-      
       logger.error('Error initiating checkout', {
         error: error.message,
         stack: error.stack,
-        userId: userId,
-        transactionCommitted: transactionCommitted
+        userId: userId
       });
       throw error;
     }
@@ -242,23 +225,19 @@ class CheckoutService {
    * @returns {Promise<Object>} Verification result
    */
   async verifyPayment(orderId, paymentResponse) {
-    const transaction = await sequelize.transaction();
-    
     try {
       logger.info('Verifying payment', {
         orderId: orderId
       });
 
       // Find order
-      const order = await Order.findByPk(orderId, { transaction });
-      
+      const order = await db.orders.findByPk(orderId);
+
       if (!order) {
-        await transaction.rollback();
         throw new Error('Order not found');
       }
 
       if (order.status !== 'pending') {
-        await transaction.rollback();
         throw new Error(`Order ${orderId} is already processed. Current status: ${order.status}`);
       }
 
@@ -269,7 +248,6 @@ class CheckoutService {
       // Validate payment data
       const paymentValidation = this.orderValidator.validatePaymentData(paymentResponse, gatewayName);
       if (!paymentValidation.isValid) {
-        await transaction.rollback();
         throw new Error(`Payment data validation failed: ${paymentValidation.errors.join(', ')}`);
       }
 
@@ -295,7 +273,7 @@ class CheckoutService {
         updateData.razorpay_signature = paymentResponse.razorpay_signature;
       }
 
-      await order.update(updateData, { transaction });
+      await db.orders.update(orderId, updateData);
 
       // Clear cart if payment successful
       if (orderStatus === 'paid') {
@@ -305,8 +283,6 @@ class CheckoutService {
           orderId: orderId
         });
       }
-
-      await transaction.commit();
 
       logger.info('Payment verified successfully', {
         orderId: orderId,
@@ -324,7 +300,6 @@ class CheckoutService {
       };
 
     } catch (error) {
-      await transaction.rollback();
       logger.error('Error verifying payment', {
         error: error.message,
         stack: error.stack,
@@ -346,10 +321,8 @@ class CheckoutService {
       });
 
       // Find order by merchant transaction ID
-      const order = await Order.findOne({
-        where: {
-          phonepe_merchant_transaction_id: merchantTransactionId
-        }
+      const order = await db.orders.findOne({
+        phonepe_merchant_transaction_id: merchantTransactionId
       });
 
       if (!order) {
@@ -365,10 +338,10 @@ class CheckoutService {
 
       // Update order status if changed
       if (statusResult.success && order.status === 'pending') {
-        await order.update({ status: 'paid' });
+        await db.orders.update(order.id, { status: 'paid' });
         await this.cartService.clearUserCart(order.userId);
       } else if (!statusResult.success && order.status === 'pending') {
-        await order.update({ status: 'failed' });
+        await db.orders.update(order.id, { status: 'failed' });
       }
 
       return {
@@ -469,8 +442,8 @@ class CheckoutService {
         hasData: !!webhookData.data
       });
 
-      const order = await Order.findOne({
-        where: { phonepe_merchant_transaction_id: merchantTransactionId }
+      const order = await db.orders.findOne({
+        phonepe_merchant_transaction_id: merchantTransactionId
       });
 
       if (!order) {
@@ -522,8 +495,8 @@ class CheckoutService {
         throw new Error('Razorpay order ID not found in webhook');
       }
 
-      const order = await Order.findOne({
-        where: { razorpay_order_id: razorpayOrderId }
+      const order = await db.orders.findOne({
+        razorpay_order_id: razorpayOrderId
       });
 
       if (!order) {
@@ -532,12 +505,12 @@ class CheckoutService {
 
       // Process webhook event
       const event = webhookData.event || webhookData.type;
-      
+
       if (event === 'payment.captured' || event === 'order.paid') {
-        await order.update({ status: 'paid' });
+        await db.orders.update(order.id, { status: 'paid' });
         await this.cartService.clearUserCart(order.userId);
       } else if (event === 'payment.failed') {
-        await order.update({ status: 'failed' });
+        await db.orders.update(order.id, { status: 'failed' });
       }
 
       return {

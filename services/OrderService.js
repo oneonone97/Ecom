@@ -1,6 +1,7 @@
 const logger = require('../utils/logger');
 const BaseService = require('./BaseService');
 const db = require('../utils/database');
+const sql = require('../utils/postgres');
 
 class OrderService extends BaseService {
   constructor(cartService, paymentService, notificationService) {
@@ -13,7 +14,7 @@ class OrderService extends BaseService {
 
   async createOrder(userId, orderData) {
     // Use database transaction support
-    return await db.orders.beginTransaction(async () => {
+    return await sql.begin(async (sql) => {
       try {
         const { shippingAddress, paymentMethod, orderNotes, billingAddress } = orderData;
 
@@ -92,19 +93,21 @@ class OrderService extends BaseService {
         });
       }
 
-      // Update product stock atomically
+      // Update product stock atomically using direct SQL within transaction
       for (const item of cart.items) {
         const product = await db.products.findByPk(item.id);
         const newStock = product.stock - item.quantity;
 
-        // Update stock with optimistic locking (check current stock)
-        const updated = await db.products.update(item.id, {
-          stock: newStock
-        });
-
-        if (!updated) {
-          throw new Error(`Failed to update stock for ${product.name}`);
+        if (newStock < 0) {
+          throw new Error(`Insufficient stock for ${product.name}. Available: ${product.stock}, Requested: ${item.quantity}`);
         }
+
+        // Update stock using transaction SQL
+        await sql`
+          UPDATE "Products"
+          SET "stock" = ${newStock}, "updatedAt" = NOW()
+          WHERE "id" = ${item.id}
+        `;
 
         logger.info('Stock updated for order', {
           productId: item.id,

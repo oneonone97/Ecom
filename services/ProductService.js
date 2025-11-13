@@ -1,12 +1,132 @@
 const logger = require('../utils/logger');
 const BaseService = require('./BaseService');
 const db = require('../utils/database');
+const { uploadImage, deleteImage, isConfigured } = require('../utils/supabaseStorage');
+const fs = require('fs');
+const path = require('path');
 
 class ProductService extends BaseService {
   constructor(cacheService) {
     super();
     this.cacheService = cacheService;
     // No repository dependency - using direct database access
+  }
+
+  /**
+   * Upload product image to Supabase Storage
+   * @param {Buffer} fileBuffer - File buffer
+   * @param {string} originalFilename - Original filename
+   * @param {string} mimetype - File MIME type
+   * @param {string} productId - Product ID for organizing files
+   * @returns {Promise<string>} Public URL of uploaded image
+   */
+  async uploadProductImage(fileBuffer, originalFilename, mimetype, productId) {
+    if (!isConfigured()) {
+      throw new Error('Supabase Storage is not configured');
+    }
+
+    try {
+      const bucketName = process.env.SUPABASE_STORAGE_BUCKET || 'products';
+      const fileExtension = path.extname(originalFilename).toLowerCase();
+      const filePath = `products/${productId}/main${fileExtension}`;
+
+      const publicUrl = await uploadImage(fileBuffer, bucketName, filePath, mimetype);
+
+      logger.info('Product image uploaded to Supabase', {
+        productId,
+        filePath,
+        publicUrl
+      });
+
+      return publicUrl;
+    } catch (error) {
+      logger.error('Failed to upload product image to Supabase:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete product image from Supabase Storage
+   * @param {string} imageUrl - Supabase image URL to delete
+   * @param {string} productId - Product ID for logging
+   * @returns {Promise<boolean>} Success status
+   */
+  async deleteProductImage(imageUrl, productId) {
+    if (!imageUrl || !imageUrl.includes('supabase.co')) {
+      return true; // Not a Supabase URL, nothing to delete
+    }
+
+    if (!isConfigured()) {
+      logger.warn('Supabase Storage not configured, cannot delete image');
+      return false;
+    }
+
+    try {
+      // Extract file path from Supabase URL
+      const url = new URL(imageUrl);
+      const pathParts = url.pathname.split('/');
+      // Supabase Storage URL format: /storage/v1/object/public/{bucket}/{path}
+      if (pathParts.length >= 6 && pathParts[1] === 'storage' && pathParts[2] === 'v1' && pathParts[3] === 'object' && pathParts[4] === 'public') {
+        const bucketName = pathParts[5];
+        const filePath = pathParts.slice(6).join('/'); // Everything after bucket name
+
+        await deleteImage(bucketName, filePath);
+        logger.info('Product image deleted from Supabase', {
+          productId,
+          bucketName,
+          filePath
+        });
+        return true;
+      }
+    } catch (error) {
+      logger.error('Failed to delete product image from Supabase:', error);
+    }
+
+    return false;
+  }
+
+  /**
+   * Process image upload for product creation/update
+   * @param {Object} req - Express request object with file
+   * @param {string} productId - Product ID (for updates)
+   * @returns {Promise<string|null>} Public URL or null if no image
+   */
+  async processProductImageUpload(req, productId = null) {
+    if (!req.file) {
+      return null;
+    }
+
+    try {
+      // Read the uploaded file
+      const fileBuffer = fs.readFileSync(req.file.path);
+
+      // Use provided productId or generate temp ID
+      const finalProductId = productId || `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+      // Upload to Supabase
+      const publicUrl = await this.uploadProductImage(
+        fileBuffer,
+        req.file.originalname,
+        req.file.mimetype,
+        finalProductId
+      );
+
+      // Clean up local temp file
+      fs.unlinkSync(req.file.path);
+
+      return publicUrl;
+    } catch (error) {
+      logger.error('Failed to process product image upload:', error);
+      // Clean up temp file on error
+      if (req.file && req.file.path && fs.existsSync(req.file.path)) {
+        try {
+          fs.unlinkSync(req.file.path);
+        } catch (cleanupError) {
+          logger.error('Failed to clean up temp file:', cleanupError);
+        }
+      }
+      throw error;
+    }
   }
 
   async createProduct(productData) {
