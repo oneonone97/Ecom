@@ -196,10 +196,10 @@ async function migrateProductImages() {
                             fileExtension === '.webp' ? 'image/webp' : 'image/jpeg';
 
             // Generate Supabase file path
-            // Main image: products/{id}/main.jpg
-            // Gallery images: products/{id}/gallery/{index}.jpg
+            // Main image: {id}/main.jpg (bucket is already "products")
+            // Gallery images: {id}/gallery/{index}.jpg
             const fileName = i === 0 ? `main${fileExtension}` : `gallery/${i}${fileExtension}`;
-            const filePath = `products/${product.id}/${fileName}`;
+            const filePath = `${product.id}/${fileName}`; // Don't include "products" - bucket name is already "products"
 
             // Upload to Supabase
             if (i === 0) {

@@ -18,7 +18,41 @@ class ProductRepository {
 
       // Build where conditions
       if (filters.category) {
-        conditions.categoryId = filters.category;
+        // Handle category filter - can be slug (string) or ID (number)
+        const categoryValue = filters.category;
+        const categoryId = parseInt(categoryValue, 10);
+        
+        if (!isNaN(categoryId)) {
+          // It's a numeric ID
+          conditions.categoryId = categoryId;
+        } else {
+          // It's a slug - need to look up the category ID
+          try {
+            const category = await db.categories.findOne({
+              slug: categoryValue
+            });
+            
+            if (category) {
+              conditions.categoryId = category.id;
+            } else {
+              // Category not found - return empty results
+              logger.warn(`Category not found: ${categoryValue}`);
+              return {
+                rows: [],
+                count: 0,
+                totalCount: 0
+              };
+            }
+          } catch (error) {
+            logger.error(`Error looking up category by slug "${categoryValue}":`, error);
+            // Return empty results on error
+            return {
+              rows: [],
+              count: 0,
+              totalCount: 0
+            };
+          }
+        }
       }
       
       if (filters.is_new === 'true' || filters.is_new === true) {

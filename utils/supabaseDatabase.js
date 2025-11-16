@@ -123,7 +123,26 @@ class SupabaseDatabase {
 
       // Build where conditions
       // Handle both: options.where and options as direct conditions
-      const whereConditions = options.where || (options.id ? { id: options.id } : {});
+      // Also handle direct condition properties (like categoryId, is_new, etc.)
+      let whereConditions = {};
+      
+      if (options.where) {
+        // Explicit where clause
+        whereConditions = options.where;
+      } else {
+        // Check for direct condition properties (excluding reserved options)
+        const reservedOptions = ['order', 'orderBy', 'limit', 'offset', 'id'];
+        for (const [key, value] of Object.entries(options)) {
+          if (!reservedOptions.includes(key) && value !== undefined && value !== null) {
+            whereConditions[key] = value;
+          }
+        }
+        
+        // Also handle options.id if present
+        if (options.id) {
+          whereConditions.id = options.id;
+        }
+      }
       
       if (whereConditions && Object.keys(whereConditions).length > 0) {
         for (const [key, value] of Object.entries(whereConditions)) {
