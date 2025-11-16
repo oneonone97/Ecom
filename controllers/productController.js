@@ -464,9 +464,10 @@ exports.getCategories = async (req, res, next) => {
     // const cacheService = container.resolve('cacheService');
 
     // Get all active categories
+    // Order by sortOrder first (for custom ordering), then by name (alphabetical fallback)
     const categories = await db.categories.findAll({
       where: { isActive: true },
-      order: [['name', 'ASC']]
+      order: [['sortOrder', 'ASC'], ['name', 'ASC']]
     });
 
     // Calculate product count for each category
