@@ -14,40 +14,60 @@
 require('dotenv').config();
 const postgres = require('postgres');
 
-if (!process.env.DATABASE_URL) {
-  throw new Error('DATABASE_URL is not set in environment variables');
-}
+// Check if Supabase client should be used instead
+// If Supabase is configured, don't initialize direct SQL connection
+const useSupabase = !!(process.env.SUPABASE_URL || process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-// Parse connection string and configure for Supabase
-const connectionString = process.env.DATABASE_URL;
-const isSupabase = connectionString.includes('supabase.co');
+let sql = null;
 
-// Configure postgres client
-const sql = postgres(connectionString, {
-  ssl: isSupabase ? {
-    rejectUnauthorized: false // Supabase uses self-signed certificates
-  } : 'require',
-  max: 10, // Maximum number of connections
-  idle_timeout: 20, // Close idle connections after 20 seconds
-  connect_timeout: 10, // Connection timeout in seconds
-  transform: {
-    undefined: null // Transform undefined to null for PostgreSQL
+// Only initialize direct SQL connection if Supabase is NOT configured
+if (!useSupabase) {
+  if (!process.env.DATABASE_URL) {
+    throw new Error('DATABASE_URL is not set in environment variables. Either set DATABASE_URL or configure Supabase (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)');
   }
-});
+
+  // Parse connection string and configure for Supabase
+  const connectionString = process.env.DATABASE_URL;
+  const isSupabase = connectionString.includes('supabase.co');
+
+  // Configure postgres client
+  sql = postgres(connectionString, {
+    ssl: isSupabase ? {
+      rejectUnauthorized: false // Supabase uses self-signed certificates
+    } : 'require',
+    max: 10, // Maximum number of connections
+    idle_timeout: 20, // Close idle connections after 20 seconds
+    connect_timeout: 10, // Connection timeout in seconds
+    transform: {
+      undefined: null // Transform undefined to null for PostgreSQL
+    }
+  });
+} else {
+  // Create a no-op sql object to prevent errors when code tries to use it
+  // but Supabase should be used instead
+  sql = {
+    end: async () => {},
+    unsafe: () => {
+      throw new Error('Direct SQL connection is disabled. Supabase client is configured. Use Supabase client instead.');
+    }
+  };
+}
 
 // Note: sql.listen() is for LISTEN/NOTIFY, not for error handling
 // Connection errors will be thrown when queries are executed
 
-// Graceful shutdown
-process.on('SIGINT', async () => {
-  await sql.end();
-  process.exit(0);
-});
+// Graceful shutdown (only if SQL connection is initialized)
+if (sql && !useSupabase) {
+  process.on('SIGINT', async () => {
+    await sql.end();
+    process.exit(0);
+  });
 
-process.on('SIGTERM', async () => {
-  await sql.end();
-  process.exit(0);
-});
+  process.on('SIGTERM', async () => {
+    await sql.end();
+    process.exit(0);
+  });
+}
 
 // Helper functions for common database operations
 const dbHelpers = {

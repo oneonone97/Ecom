@@ -1,18 +1,29 @@
-const sql = require('./postgres');
 const logger = require('./logger');
 
-// Check if Supabase is configured
+// Check if Supabase is configured FIRST, before loading postgres
+// This prevents postgres from initializing if Supabase is available
 let useSupabase = false;
 let SupabaseDatabase = null;
+let sql = null;
 
-try {
-  if (process.env.SUPABASE_URL || process.env.SUPABASE_SERVICE_ROLE_KEY) {
+// Check for Supabase configuration
+if (process.env.SUPABASE_URL || process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  try {
     SupabaseDatabase = require('./supabaseDatabase');
     useSupabase = true;
-    logger.info('Using Supabase client for database operations (better for serverless)');
+    logger.info('Using Supabase client for database operations (better for serverless)', {
+      supabaseUrl: process.env.SUPABASE_URL || 'extracted from DATABASE_URL',
+      hasServiceRoleKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY
+    });
+  } catch (error) {
+    logger.warn('Supabase client not available, will use direct SQL connection:', error.message);
+    // Fall back to direct SQL
+    sql = require('./postgres');
   }
-} catch (error) {
-  logger.warn('Supabase client not available, using direct SQL connection:', error.message);
+} else {
+  // No Supabase configured, use direct SQL
+  logger.info('Supabase not configured, using direct SQL connection');
+  sql = require('./postgres');
 }
 
 /**
@@ -423,9 +434,15 @@ let db;
 if (useSupabase && SupabaseDatabase) {
   // Use Supabase client (better for serverless environments)
   db = SupabaseDatabase;
-  logger.info('Database layer initialized with Supabase client');
+  logger.info('✅ Database layer initialized with Supabase client (PostgREST API)', {
+    connectionType: 'Supabase Client',
+    environment: process.env.NODE_ENV || 'development'
+  });
 } else {
   // Use direct SQL connection (fallback)
+  if (!sql) {
+    throw new Error('Neither Supabase client nor direct SQL connection is available. Check your environment variables.');
+  }
   db = {
     users: new Database('Users'),
     products: new Database('Products'),
@@ -439,7 +456,11 @@ if (useSupabase && SupabaseDatabase) {
     wishlistItems: new Database('WishlistItems'),
     refreshTokens: new Database('RefreshTokens'),
   };
-  logger.info('Database layer initialized with direct SQL connection');
+  logger.info('⚠️  Database layer initialized with direct SQL connection (fallback mode)', {
+    connectionType: 'Direct PostgreSQL',
+    environment: process.env.NODE_ENV || 'development',
+    note: 'Consider using Supabase client for better serverless support'
+  });
 }
 
 module.exports = db;
