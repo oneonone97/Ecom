@@ -3,11 +3,11 @@ const BaseService = require('./BaseService');
 const db = require('../utils/database');
 
 class InventoryService extends BaseService {
-  constructor(cacheService, notificationService) {
+  constructor(cacheService, notificationService, productRepository) {
     super();
     this.cacheService = cacheService;
     this.notificationService = notificationService;
-    // No repository dependency - using direct database access
+    this.productRepository = productRepository;
     
     // Inventory thresholds
     this.LOW_STOCK_THRESHOLD = parseInt(process.env.LOW_STOCK_THRESHOLD) || 10;
@@ -180,18 +180,17 @@ class InventoryService extends BaseService {
 
   async getLowStockProducts(threshold = this.LOW_STOCK_THRESHOLD) {
     try {
-      // Direct query without cache to avoid timeout issues
-      const products = await this.productRepository.model.findAll({
-        where: {
-          stock: {
-            [Op.lte]: threshold,
-            [Op.gt]: this.OUT_OF_STOCK_THRESHOLD
-          }
-        },
-        attributes: ['id', 'name', 'categoryId', 'stock', 'price_paise'],
+      // Get all products and filter in memory (Supabase doesn't support complex operators)
+      const allProducts = await db.products.findAll({
         order: [['stock', 'ASC']],
-        limit: 100
+        limit: 1000 // Get more to filter
       });
+
+      // Filter products with stock between OUT_OF_STOCK_THRESHOLD and threshold
+      const products = allProducts.filter(product => {
+        const stock = product.stock || 0;
+        return stock > this.OUT_OF_STOCK_THRESHOLD && stock <= threshold;
+      }).slice(0, 100); // Limit to 100
 
       return products.map(product => ({
         id: product.id,
@@ -209,12 +208,9 @@ class InventoryService extends BaseService {
 
   async getOutOfStockProducts() {
     try {
-      // Direct query without cache to avoid timeout issues
-      const products = await this.productRepository.model.findAll({
-        where: {
-          stock: this.OUT_OF_STOCK_THRESHOLD
-        },
-        attributes: ['id', 'name', 'categoryId', 'stock', 'price_paise', 'updatedAt'],
+      // Get products with stock = 0
+      const products = await db.products.findAll({
+        where: { stock: this.OUT_OF_STOCK_THRESHOLD },
         order: [['updatedAt', 'DESC']],
         limit: 100
       });
@@ -249,50 +245,41 @@ class InventoryService extends BaseService {
       };
 
       // Get total products and stock summary with timeout protection
-      const [totalProducts, totalStock, stockByCategory] = await Promise.allSettled([
-        this.productRepository.model.count(),
-        this.productRepository.model.sum('stock'),
+      const [totalProducts, allProducts, stockByCategory] = await Promise.allSettled([
+        db.products.count(),
+        db.products.findAll({ limit: 10000 }), // Get all for calculations
         includeCategories ? this.getStockByCategory() : Promise.resolve({})
       ]);
 
+      // Calculate total stock from products
+      const products = allProducts.status === 'fulfilled' ? allProducts.value : [];
+      const totalStockValue = products.reduce((sum, p) => sum + (p.stock || 0), 0);
+
       report.summary = {
         totalProducts: totalProducts.status === 'fulfilled' ? totalProducts.value : 0,
-        totalStockValue: totalStock.status === 'fulfilled' ? (totalStock.value || 0) : 0,
+        totalStockValue: totalStockValue,
         stockByCategory: stockByCategory.status === 'fulfilled' ? stockByCategory.value : {}
       };
 
       // Get stock status breakdown
       if (includeStockStatus) {
-        const [inStock, lowStock, criticalStock, outOfStock] = await Promise.allSettled([
-          this.productRepository.model.count({
-            where: { stock: { [Op.gt]: this.LOW_STOCK_THRESHOLD } }
-          }),
-          this.productRepository.model.count({
-            where: { 
-              stock: { 
-                [Op.lte]: this.LOW_STOCK_THRESHOLD,
-                [Op.gt]: this.CRITICAL_STOCK_THRESHOLD
-              }
-            }
-          }),
-          this.productRepository.model.count({
-            where: { 
-              stock: { 
-                [Op.lte]: this.CRITICAL_STOCK_THRESHOLD,
-                [Op.gt]: this.OUT_OF_STOCK_THRESHOLD
-              }
-            }
-          }),
-          this.productRepository.model.count({
-            where: { stock: this.OUT_OF_STOCK_THRESHOLD }
-          })
-        ]);
+        // Filter products by stock status
+        const inStock = products.filter(p => (p.stock || 0) > this.LOW_STOCK_THRESHOLD).length;
+        const lowStock = products.filter(p => {
+          const stock = p.stock || 0;
+          return stock <= this.LOW_STOCK_THRESHOLD && stock > this.CRITICAL_STOCK_THRESHOLD;
+        }).length;
+        const criticalStock = products.filter(p => {
+          const stock = p.stock || 0;
+          return stock <= this.CRITICAL_STOCK_THRESHOLD && stock > this.OUT_OF_STOCK_THRESHOLD;
+        }).length;
+        const outOfStock = products.filter(p => (p.stock || 0) === this.OUT_OF_STOCK_THRESHOLD).length;
 
         report.summary.stockStatus = {
-          inStock: inStock.status === 'fulfilled' ? inStock.value : 0,
-          lowStock: lowStock.status === 'fulfilled' ? lowStock.value : 0,
-          criticalStock: criticalStock.status === 'fulfilled' ? criticalStock.value : 0,
-          outOfStock: outOfStock.status === 'fulfilled' ? outOfStock.value : 0
+          inStock: inStock,
+          lowStock: lowStock,
+          criticalStock: criticalStock,
+          outOfStock: outOfStock
         };
       }
 

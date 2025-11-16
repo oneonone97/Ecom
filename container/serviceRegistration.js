@@ -3,7 +3,7 @@ const { container, createFactory } = require('./DIContainer');
 // Import repositories
 // Repositories removed - now using direct database access
 // const UserRepository = require('../repositories/UserRepository');
-// const ProductRepository = require('../repositories/ProductRepository');
+const ProductRepository = require('../repositories/ProductRepository');
 // const CartRepository = require('../repositories/CartRepository');
 // const OrderRepository = require('../repositories/OrderRepository');
 
@@ -31,7 +31,7 @@ const logger = require('../utils/logger');
 
 // Repositories removed - services now use direct database access
 // container.registerSingleton('userRepository', createFactory(UserRepository));
-// container.registerSingleton('productRepository', createFactory(ProductRepository));
+container.registerSingleton('productRepository', createFactory(ProductRepository));
 // container.registerSingleton('cartRepository', createFactory(CartRepository));
 // container.registerSingleton('orderRepository', createFactory(OrderRepository));
 
@@ -55,8 +55,8 @@ container.registerSingleton('paymentVerifier', createFactory(PaymentVerifier));
 // Register business services (repositories removed)
 container.registerSingleton('userService', createFactory(UserService), []);
 container.registerSingleton('cartService', createFactory(CartService), []);
-container.registerSingleton('productService', createFactory(ProductService), ['cacheService']);
-container.registerSingleton('inventoryService', createFactory(InventoryService), ['cacheService', 'notificationService']);
+container.registerSingleton('productService', createFactory(ProductService), ['cacheService', 'productRepository']);
+container.registerSingleton('inventoryService', createFactory(InventoryService), ['cacheService', 'notificationService', 'productRepository']);
 container.registerSingleton('orderService', createFactory(OrderService), ['cartService', 'paymentService', 'notificationService']);
 
 // Register checkout service with dependencies

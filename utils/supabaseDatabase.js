@@ -84,8 +84,11 @@ class SupabaseDatabase {
     try {
       let query = this.getClient().from(this.tableName).select('*');
 
+      // Handle both formats: { where: {...} } and { key: value }
+      const actualConditions = conditions.where || conditions;
+
       // Build where conditions
-      for (const [key, value] of Object.entries(conditions)) {
+      for (const [key, value] of Object.entries(actualConditions)) {
         this.validateColumnName(key);
         
         if (value === null || value === undefined) {
@@ -119,8 +122,11 @@ class SupabaseDatabase {
       let query = this.getClient().from(this.tableName).select('*');
 
       // Build where conditions
-      if (options.where) {
-        for (const [key, value] of Object.entries(options.where)) {
+      // Handle both: options.where and options as direct conditions
+      const whereConditions = options.where || (options.id ? { id: options.id } : {});
+      
+      if (whereConditions && Object.keys(whereConditions).length > 0) {
+        for (const [key, value] of Object.entries(whereConditions)) {
           this.validateColumnName(key);
           
           if (value === null || value === undefined) {
@@ -148,6 +154,13 @@ class SupabaseDatabase {
               const match = orderClause.trim().match(/^(\w+)\s+(ASC|DESC)$/i);
               if (match) {
                 const [, column, direction] = match;
+                this.validateColumnName(column);
+                query = query.order(column, { ascending: direction.toUpperCase() === 'ASC' });
+              }
+            } else if (Array.isArray(orderClause) && orderClause.length === 2) {
+              // Handle array format: ['column', 'ASC'] or ['column', 'DESC']
+              const [column, direction] = orderClause;
+              if (typeof column === 'string' && typeof direction === 'string') {
                 this.validateColumnName(column);
                 query = query.order(column, { ascending: direction.toUpperCase() === 'ASC' });
               }
@@ -324,17 +337,37 @@ class SupabaseDatabase {
         throw new Error('DATABASE_URL is required for complex JOIN queries');
       }
       
+      // For Supabase, use pooler URL if available, otherwise use direct connection
+      // In serverless environments, direct connections often fail
+      let finalConnectionString = connectionString;
+      
+      // If it's a Supabase direct connection (port 5432), try to use pooler (port 6543)
+      // Only convert if not already using pooler
+      if (connectionString.includes('supabase.co') && 
+          connectionString.includes(':5432/') && 
+          !connectionString.includes('pooler.supabase.com')) {
+        // Try to convert to pooler URL
+        finalConnectionString = connectionString.replace(':5432/', ':6543/');
+        logger.info('Using Supabase pooler for findWithRelations', {
+          original: connectionString.substring(0, 50) + '...',
+          pooler: finalConnectionString.substring(0, 50) + '...'
+        });
+      }
+      
       // Create a temporary connection for this query
-      const sql = postgres(connectionString, {
-        ssl: connectionString.includes('supabase.co') ? {
+      const sql = postgres(finalConnectionString, {
+        ssl: finalConnectionString.includes('supabase.co') ? {
           rejectUnauthorized: false
         } : 'require',
         max: 1,
         connect_timeout: 10
       });
       
+      // Handle both formats: { where: {...} } and direct conditions
+      const actualConditions = conditions.where || conditions;
+      
       // Build base query
-      const { where, params } = this.buildWhereClauseForSQL(conditions.where || conditions);
+      const { where, params } = this.buildWhereClauseForSQL(actualConditions);
       const orderBy = this.buildOrderByForSQL(options.order);
       const limitOffset = this.buildLimitOffsetForSQL(options.limit, options.offset);
 
@@ -519,9 +552,17 @@ class SupabaseDatabase {
         throw new Error('DATABASE_URL is required for bulk update operations');
       }
 
+      // For Supabase, use pooler URL if available
+      let finalConnectionString = connectionString;
+      if (connectionString.includes('supabase.co') && 
+          connectionString.includes(':5432/') && 
+          !connectionString.includes('pooler.supabase.com')) {
+        finalConnectionString = connectionString.replace(':5432/', ':6543/');
+      }
+      
       // Create temporary connection for bulk update
-      const sql = postgres(connectionString, {
-        ssl: connectionString.includes('supabase.co') ? {
+      const sql = postgres(finalConnectionString, {
+        ssl: finalConnectionString.includes('supabase.co') ? {
           rejectUnauthorized: false
         } : 'require',
         max: 1,
@@ -597,9 +638,17 @@ class SupabaseDatabase {
         throw new Error('DATABASE_URL is required for aggregate operations');
       }
 
+      // For Supabase, use pooler URL if available
+      let finalConnectionString = connectionString;
+      if (connectionString.includes('supabase.co') && 
+          connectionString.includes(':5432/') && 
+          !connectionString.includes('pooler.supabase.com')) {
+        finalConnectionString = connectionString.replace(':5432/', ':6543/');
+      }
+      
       // Create temporary connection for aggregate query
-      const sql = postgres(connectionString, {
-        ssl: connectionString.includes('supabase.co') ? {
+      const sql = postgres(finalConnectionString, {
+        ssl: finalConnectionString.includes('supabase.co') ? {
           rejectUnauthorized: false
         } : 'require',
         max: 1,

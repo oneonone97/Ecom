@@ -72,8 +72,18 @@ if (!useSupabase) {
       const connectionString = process.env.DATABASE_URL;
       const isSupabase = connectionString.includes('supabase.co');
       
+      // For Supabase, use pooler URL if available (port 6543 instead of 5432)
+      // In serverless environments, direct connections often fail
+      let finalConnectionString = connectionString;
+      if (isSupabase && 
+          connectionString.includes(':5432/') && 
+          !connectionString.includes('pooler.supabase.com')) {
+        // Convert to pooler URL (port 6543)
+        finalConnectionString = connectionString.replace(':5432/', ':6543/');
+      }
+      
       // Create temporary connection for transaction
-      const transactionSql = postgres(connectionString, {
+      const transactionSql = postgres(finalConnectionString, {
         ssl: isSupabase ? {
           rejectUnauthorized: false
         } : 'require',

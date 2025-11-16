@@ -6,10 +6,10 @@ const fs = require('fs');
 const path = require('path');
 
 class ProductService extends BaseService {
-  constructor(cacheService) {
+  constructor(cacheService, productRepository) {
     super();
     this.cacheService = cacheService;
-    // No repository dependency - using direct database access
+    this.productRepository = productRepository;
   }
 
   /**
