@@ -463,11 +463,35 @@ exports.getCategories = async (req, res, next) => {
     const db = require('../utils/database');
     // const cacheService = container.resolve('cacheService');
 
-    // Bypassing cache for debugging
+    // Get all active categories
     const categories = await db.categories.findAll({
       where: { isActive: true },
       order: [['name', 'ASC']]
     });
+
+    // Calculate product count for each category
+    const categoriesWithCount = await Promise.all(
+      categories.map(async (category) => {
+        try {
+          // Count products in this category
+          // Note: count() expects conditions directly, not wrapped in 'where'
+          const productCount = await db.products.count({
+            categoryId: category.id
+          });
+
+          return {
+            ...category,
+            productCount: productCount || 0
+          };
+        } catch (error) {
+          logger.warn(`Error counting products for category ${category.id}:`, error.message);
+          return {
+            ...category,
+            productCount: 0
+          };
+        }
+      })
+    );
 
     /*
     const categories = await cacheService.getOrSet(
@@ -483,7 +507,7 @@ exports.getCategories = async (req, res, next) => {
 
     res.status(200).json({
       success: true,
-      data: categories
+      data: categoriesWithCount
     });
   } catch (error) {
     logger.logError(error, req);
