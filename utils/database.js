@@ -40,15 +40,16 @@ class Database {
   }
 
   // Default column whitelists for each table
+  // Must match SupabaseDatabase class for compatibility
   getDefaultColumns() {
     const defaults = {
-      'Users': ['id', 'name', 'email', 'password', 'role', 'isActive', 'lastLoginAt', 'loginAttempts', 'lockUntil', 'createdAt', 'updatedAt'],
-      'Products': ['id', 'name', 'description', 'price_paise', 'sale_price_paise', 'stock', 'categoryId', 'image_url', 'featured', 'is_new', 'is_sale', 'createdAt', 'updatedAt'],
+      'Users': ['id', 'name', 'email', 'password', 'role', 'isActive', 'lastLoginAt', 'loginAttempts', 'lockUntil', 'createdAt', 'updatedAt', 'firstName', 'lastName', 'phone', 'isVerified', 'username'],
+      'Products': ['id', 'name', 'description', 'price_paise', 'sale_price_paise', 'stock', 'categoryId', 'image_url', 'featured', 'is_new', 'is_sale', 'createdAt', 'updatedAt', 'sku'],
       'Categories': ['id', 'name', 'slug', 'description', 'parentId', 'image', 'isActive', 'sortOrder', 'productCount', 'metaTitle', 'metaDescription', 'metaKeywords', 'createdAt', 'updatedAt'],
       'Carts': ['id', 'userId', 'createdAt', 'updatedAt'],
       'CartItems': ['id', 'cartId', 'productId', 'quantity', 'price_paise', 'createdAt', 'updatedAt'],
-      'Orders': ['id', 'userId', 'totalAmount', 'status', 'shippingAddress', 'paymentMethod', 'paymentStatus', 'phonepe_merchant_transaction_id', 'phonepe_transaction_id', 'razorpay_payment_id', 'razorpay_order_id', 'createdAt', 'updatedAt'],
-      'OrderItems': ['id', 'orderId', 'productId', 'quantity', 'price_paise', 'productName', 'productImage', 'createdAt', 'updatedAt'],
+      'Orders': ['id', 'userId', 'totalAmount', 'status', 'shippingAddress', 'paymentMethod', 'paymentStatus', 'phonepe_merchant_transaction_id', 'phonepe_transaction_id', 'razorpay_payment_id', 'razorpay_order_id', 'createdAt', 'updatedAt', 'subtotal', 'shippingCost', 'taxAmount', 'billingAddress', 'orderNotes', 'total_amount_paise', 'currency', 'payment_gateway', 'receipt', 'address_json'],
+      'OrderItems': ['id', 'orderId', 'productId', 'quantity', 'price_paise', 'productName', 'productImage', 'createdAt', 'updatedAt', 'unit_price_paise', 'productDescription'],
       'Reviews': ['id', 'userId', 'productId', 'rating', 'title', 'comment', 'isVerified', 'createdAt', 'updatedAt'],
       'Wishlists': ['id', 'userId', 'name', 'createdAt', 'updatedAt'],
       'WishlistItems': ['id', 'wishlistId', 'productId', 'createdAt', 'updatedAt'],

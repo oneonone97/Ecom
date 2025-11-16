@@ -43,14 +43,57 @@ if (!useSupabase) {
     }
   });
 } else {
-  // Create a no-op sql object to prevent errors when code tries to use it
-  // but Supabase should be used instead
-  sql = {
+  // When Supabase is configured, create a smart wrapper that:
+  // 1. Allows transactions (sql.begin) - creates temporary direct SQL connection
+  // 2. Blocks direct queries (sql.unsafe) - use Supabase client instead
+  // 3. Blocks template literals (sql`...`) - use Supabase client instead
+  
+  // Create a function that can be used as a tag function for template literals
+  // But throw an error outside of transactions
+  const sqlFunction = function(strings, ...values) {
+    throw new Error('Template literal SQL queries are disabled outside transactions. Supabase client is configured. Use Supabase client or wrap in sql.begin() for direct SQL.');
+  };
+  
+  sql = Object.assign(sqlFunction, {
     end: async () => {},
+    
+    // Block direct SQL queries - use Supabase client instead
     unsafe: () => {
       throw new Error('Direct SQL connection is disabled. Supabase client is configured. Use Supabase client instead.');
+    },
+    
+    // Support transactions - create temporary direct SQL connection
+    // Transactions require direct SQL as Supabase REST API doesn't support them
+    begin: async (callback) => {
+      if (!process.env.DATABASE_URL) {
+        throw new Error('DATABASE_URL is required for transactions. Transactions require direct SQL connection.');
+      }
+      
+      const connectionString = process.env.DATABASE_URL;
+      const isSupabase = connectionString.includes('supabase.co');
+      
+      // Create temporary connection for transaction
+      const transactionSql = postgres(connectionString, {
+        ssl: isSupabase ? {
+          rejectUnauthorized: false
+        } : 'require',
+        max: 1,
+        connect_timeout: 10,
+        transform: {
+          undefined: null
+        }
+      });
+      
+      try {
+        // Execute transaction - the callback receives transactionSql which supports template literals
+        const result = await transactionSql.begin(callback);
+        return result;
+      } finally {
+        // Always close the transaction connection
+        await transactionSql.end();
+      }
     }
-  };
+  });
 }
 
 // Note: sql.listen() is for LISTEN/NOTIFY, not for error handling

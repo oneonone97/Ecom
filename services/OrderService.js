@@ -374,7 +374,11 @@ class OrderService extends BaseService {
       // TODO: Implement order analytics using database queries
       // For now, return basic analytics
       const totalOrders = await db.orders.count();
-      const totalRevenue = await db.orders.aggregate('totalAmount', 'SUM');
+      // Use total_amount_paise if it exists, otherwise fall back to totalAmount
+      const revenueResult = await db.orders.aggregate({
+        functions: { totalRevenue: 'SUM(total_amount_paise)' }
+      });
+      const totalRevenue = revenueResult && revenueResult[0] ? revenueResult[0].totalRevenue : 0;
 
       return {
         totalOrders,

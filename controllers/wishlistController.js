@@ -11,29 +11,44 @@ const getUserWishlists = async (req, res, next) => {
   try {
     logger.info(`Fetching wishlists for user ${req.user.id}`);
 
-    const wishlists = await Wishlist.getUserWishlists(req.user.id);
-
-    // Enrich products with image galleries
-    const enrichedWishlists = wishlists.map(wishlist => {
-      const wishlistData = wishlist.toJSON ? wishlist.toJSON() : wishlist;
-      if (wishlistData.items && Array.isArray(wishlistData.items)) {
-        wishlistData.items = wishlistData.items.map(item => {
-          if (item.product && item.product.image_url) {
-            const imageGallery = getImageGallery(item.product.image_url);
-            return {
-              ...item,
-              product: {
-                ...item.product,
-                image_gallery: imageGallery.gallery,
-                images: imageGallery // For frontend compatibility
-              }
-            };
-          }
-          return item;
-        });
-      }
-      return wishlistData;
+    // Get all wishlists for user
+    const wishlists = await db.wishlists.findAll({
+      where: { userId: req.user.id },
+      order: [['createdAt', 'DESC']]
     });
+
+    // Get items for each wishlist and enrich with product data
+    const enrichedWishlists = await Promise.all(
+      wishlists.map(async (wishlist) => {
+        const items = await db.wishlistItems.findAll({
+          where: { wishlistId: wishlist.id }
+        });
+
+        // Get product details for each item
+        const itemsWithProducts = await Promise.all(
+          items.map(async (item) => {
+            const product = await db.products.findByPk(item.productId);
+            if (product && product.image_url) {
+              const imageGallery = getImageGallery(product.image_url);
+              return {
+                ...item,
+                product: {
+                  ...product,
+                  image_gallery: imageGallery.gallery,
+                  images: imageGallery
+                }
+              };
+            }
+            return { ...item, product };
+          })
+        );
+
+        return {
+          ...wishlist,
+          items: itemsWithProducts
+        };
+      })
+    );
 
     res.status(200).json({
       success: true,
@@ -55,42 +70,56 @@ const getDefaultWishlist = async (req, res, next) => {
   try {
     logger.info(`Fetching default wishlist for user ${req.user.id}`);
 
-    const wishlist = await Wishlist.getDefaultWishlist(req.user.id);
-    
-    // Load items for the wishlist
-    await wishlist.reload({
-      include: [{
-        model: WishlistItem,
-        as: 'items',
-        include: [{
-          model: Product,
-          as: 'product',
-          attributes: ['id', 'name', 'price_paise', 'sale_price_paise', 'image_url', 'stock', 'description', 'categoryId', 'featured', 'is_new', 'is_sale']
-        }]
-      }],
-      order: [
-        [{ model: WishlistItem, as: 'items' }, 'addedAt', 'DESC']
-      ]
+    // Find or create default wishlist
+    let wishlist = await db.wishlists.findOne({
+      where: { userId: req.user.id, name: 'Default Wishlist' }
     });
 
-    // Enrich products with image galleries
-    const wishlistData = wishlist.toJSON();
-    if (wishlistData.items && Array.isArray(wishlistData.items)) {
-      wishlistData.items = wishlistData.items.map(item => {
-        if (item.product && item.product.image_url) {
-          const imageGallery = getImageGallery(item.product.image_url);
+    if (!wishlist) {
+      // Create default wishlist if it doesn't exist
+      wishlist = await db.wishlists.create({
+        userId: req.user.id,
+        name: 'Default Wishlist'
+      });
+    }
+
+    // Get items with product details
+    const items = await db.wishlistItems.findAll({
+      where: { wishlistId: wishlist.id }
+    });
+
+    const itemsWithProducts = await Promise.all(
+      items.map(async (item) => {
+        const product = await db.products.findByPk(item.productId);
+        if (product && product.image_url) {
+          const imageGallery = getImageGallery(product.image_url);
           return {
             ...item,
             product: {
-              ...item.product,
+              id: product.id,
+              name: product.name,
+              price_paise: product.price_paise,
+              sale_price_paise: product.sale_price_paise,
+              image_url: product.image_url,
+              stock: product.stock,
+              description: product.description,
+              categoryId: product.categoryId,
+              featured: product.featured,
+              is_new: product.is_new,
+              is_sale: product.is_sale,
               image_gallery: imageGallery.gallery,
-              images: imageGallery // For frontend compatibility
+              images: imageGallery
             }
           };
         }
-        return item;
-      });
-    }
+        return { ...item, product };
+      })
+    );
+
+    const wishlistData = {
+      ...wishlist,
+      items: itemsWithProducts
+    };
 
     res.status(200).json({
       success: true,
@@ -113,12 +142,11 @@ const createWishlist = async (req, res, next) => {
     
     logger.info(`Creating wishlist for user ${req.user.id}`, { name });
 
-    const wishlist = await Wishlist.create({
+    const wishlist = await db.wishlists.create({
       userId: req.user.id,
       name: name || 'My Wishlist',
-      description,
-      isPublic: isPublic || false,
-      isDefault: false
+      description: description || null,
+      isPublic: isPublic || false
     });
 
     res.status(201).json({
@@ -140,16 +168,13 @@ const createWishlist = async (req, res, next) => {
 const addItemToWishlist = async (req, res, next) => {
   try {
     const { wishlistId } = req.params;
-    const { productId, priority, notes } = req.body;
+    const { productId } = req.body;
     
     logger.info(`Adding product ${productId} to wishlist ${wishlistId}`);
 
     // Find wishlist and verify ownership
-    const wishlist = await Wishlist.findOne({
-      where: {
-        id: wishlistId,
-        userId: req.user.id
-      }
+    const wishlist = await db.wishlists.findOne({
+      where: { id: wishlistId, userId: req.user.id }
     });
 
     if (!wishlist) {
@@ -160,7 +185,7 @@ const addItemToWishlist = async (req, res, next) => {
     }
 
     // Check if product exists
-    const product = await Product.findByPk(productId);
+    const product = await db.products.findByPk(productId);
     if (!product) {
       return res.status(404).json({
         success: false,
@@ -168,33 +193,36 @@ const addItemToWishlist = async (req, res, next) => {
       });
     }
 
-    // Add item to wishlist
-    const item = await wishlist.addItem(productId, {
-      priority: priority || 'medium',
-      notes: notes || null,
-      priceWhenAdded: product.price
+    // Check if item already exists
+    const existingItem = await db.wishlistItems.findOne({
+      where: { wishlistId, productId }
     });
 
-    // Reload with product data
-    await item.reload({
-      include: [{
-        model: Product,
-        as: 'product'
-      }]
+    if (existingItem) {
+      return res.status(400).json({
+        success: false,
+        message: 'Product is already in this wishlist'
+      });
+    }
+
+    // Add item to wishlist
+    const item = await db.wishlistItems.create({
+      wishlistId,
+      productId
     });
+
+    // Get product data
+    const itemWithProduct = {
+      ...item,
+      product
+    };
 
     res.status(201).json({
       success: true,
-      data: item,
+      data: itemWithProduct,
       message: 'Item added to wishlist successfully'
     });
   } catch (error) {
-    if (error.message === 'Product is already in this wishlist') {
-      return res.status(400).json({
-        success: false,
-        message: error.message
-      });
-    }
     logger.error('Error adding item to wishlist:', error);
     next(error);
   }
@@ -212,11 +240,8 @@ const removeItemFromWishlist = async (req, res, next) => {
     logger.info(`Removing product ${productId} from wishlist ${wishlistId}`);
 
     // Find wishlist and verify ownership
-    const wishlist = await Wishlist.findOne({
-      where: {
-        id: wishlistId,
-        userId: req.user.id
-      }
+    const wishlist = await db.wishlists.findOne({
+      where: { id: wishlistId, userId: req.user.id }
     });
 
     if (!wishlist) {
@@ -226,12 +251,23 @@ const removeItemFromWishlist = async (req, res, next) => {
       });
     }
 
-    // Remove item
-    const result = await wishlist.removeItem(productId);
+    // Find and delete item
+    const item = await db.wishlistItems.findOne({
+      where: { wishlistId, productId }
+    });
+
+    if (!item) {
+      return res.status(404).json({
+        success: false,
+        message: 'Item not found in wishlist'
+      });
+    }
+
+    await db.wishlistItems.destroy(item.id);
 
     res.status(200).json({
       success: true,
-      message: result.message
+      message: 'Item removed from wishlist successfully'
     });
   } catch (error) {
     logger.error('Error removing item from wishlist:', error);
@@ -252,11 +288,8 @@ const updateWishlistItem = async (req, res, next) => {
     logger.info(`Updating wishlist item ${itemId}`);
 
     // Find wishlist and verify ownership
-    const wishlist = await Wishlist.findOne({
-      where: {
-        id: wishlistId,
-        userId: req.user.id
-      }
+    const wishlist = await db.wishlists.findOne({
+      where: { id: wishlistId, userId: req.user.id }
     });
 
     if (!wishlist) {
@@ -267,33 +300,32 @@ const updateWishlistItem = async (req, res, next) => {
     }
 
     // Find and update item
-    const item = await WishlistItem.findOne({
-      where: {
-        id: itemId,
-        wishlistId: wishlistId
-      }
-    });
+    const item = await db.wishlistItems.findByPk(itemId);
 
-    if (!item) {
+    if (!item || item.wishlistId !== parseInt(wishlistId)) {
       return res.status(404).json({
         success: false,
         message: 'Wishlist item not found'
       });
     }
 
-    if (priority) await item.updatePriority(priority);
-    if (notes !== undefined) await item.updateNotes(notes);
+    // Update item (if priority/notes columns exist)
+    const updateData = {};
+    if (priority !== undefined) updateData.priority = priority;
+    if (notes !== undefined) updateData.notes = notes;
 
-    await item.reload({
-      include: [{
-        model: Product,
-        as: 'product'
-      }]
-    });
+    const updatedItem = await db.wishlistItems.update(itemId, updateData);
+
+    // Get product data
+    const product = await db.products.findByPk(item.productId);
+    const itemWithProduct = {
+      ...updatedItem,
+      product
+    };
 
     res.status(200).json({
       success: true,
-      data: item,
+      data: itemWithProduct,
       message: 'Wishlist item updated successfully'
     });
   } catch (error) {
@@ -314,11 +346,8 @@ const deleteWishlist = async (req, res, next) => {
     logger.info(`Deleting wishlist ${wishlistId}`);
 
     // Find wishlist and verify ownership
-    const wishlist = await Wishlist.findOne({
-      where: {
-        id: wishlistId,
-        userId: req.user.id
-      }
+    const wishlist = await db.wishlists.findOne({
+      where: { id: wishlistId, userId: req.user.id }
     });
 
     if (!wishlist) {
@@ -328,15 +357,17 @@ const deleteWishlist = async (req, res, next) => {
       });
     }
 
-    // Prevent deletion of default wishlist
-    if (wishlist.isDefault) {
-      return res.status(400).json({
-        success: false,
-        message: 'Cannot delete default wishlist'
-      });
+    // Delete all items first
+    const items = await db.wishlistItems.findAll({
+      where: { wishlistId }
+    });
+    
+    for (const item of items) {
+      await db.wishlistItems.destroy(item.id);
     }
 
-    await wishlist.destroy();
+    // Delete wishlist
+    await db.wishlists.destroy(wishlistId);
 
     res.status(200).json({
       success: true,
@@ -360,11 +391,8 @@ const clearWishlist = async (req, res, next) => {
     logger.info(`Clearing all items from wishlist ${wishlistId}`);
 
     // Find wishlist and verify ownership
-    const wishlist = await Wishlist.findOne({
-      where: {
-        id: wishlistId,
-        userId: req.user.id
-      }
+    const wishlist = await db.wishlists.findOne({
+      where: { id: wishlistId, userId: req.user.id }
     });
 
     if (!wishlist) {
@@ -374,11 +402,19 @@ const clearWishlist = async (req, res, next) => {
       });
     }
 
-    const result = await wishlist.clearAll();
+    // Delete all items
+    const items = await db.wishlistItems.findAll({
+      where: { wishlistId }
+    });
+    
+    for (const item of items) {
+      await db.wishlistItems.destroy(item.id);
+    }
 
     res.status(200).json({
       success: true,
-      ...result
+      message: 'Wishlist cleared successfully',
+      count: items.length
     });
   } catch (error) {
     logger.error('Error clearing wishlist:', error);
@@ -396,4 +432,3 @@ module.exports = {
   deleteWishlist,
   clearWishlist
 };
-

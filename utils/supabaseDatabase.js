@@ -32,8 +32,8 @@ class SupabaseDatabase {
       'Categories': ['id', 'name', 'slug', 'description', 'parentId', 'image', 'isActive', 'sortOrder', 'productCount', 'metaTitle', 'metaDescription', 'metaKeywords', 'createdAt', 'updatedAt'],
       'Carts': ['id', 'userId', 'createdAt', 'updatedAt'],
       'CartItems': ['id', 'cartId', 'productId', 'quantity', 'price_paise', 'createdAt', 'updatedAt'],
-      'Orders': ['id', 'userId', 'totalAmount', 'status', 'shippingAddress', 'paymentMethod', 'paymentStatus', 'phonepe_merchant_transaction_id', 'phonepe_transaction_id', 'razorpay_payment_id', 'razorpay_order_id', 'createdAt', 'updatedAt', 'subtotal', 'shippingCost', 'taxAmount', 'billingAddress', 'orderNotes'],
-      'OrderItems': ['id', 'orderId', 'productId', 'quantity', 'price_paise', 'productName', 'productImage', 'createdAt', 'updatedAt'],
+      'Orders': ['id', 'userId', 'totalAmount', 'status', 'shippingAddress', 'paymentMethod', 'paymentStatus', 'phonepe_merchant_transaction_id', 'phonepe_transaction_id', 'razorpay_payment_id', 'razorpay_order_id', 'createdAt', 'updatedAt', 'subtotal', 'shippingCost', 'taxAmount', 'billingAddress', 'orderNotes', 'total_amount_paise', 'currency', 'payment_gateway', 'receipt', 'address_json'],
+      'OrderItems': ['id', 'orderId', 'productId', 'quantity', 'price_paise', 'productName', 'productImage', 'createdAt', 'updatedAt', 'unit_price_paise', 'productDescription'],
       'Reviews': ['id', 'userId', 'productId', 'rating', 'title', 'comment', 'isVerified', 'createdAt', 'updatedAt'],
       'Wishlists': ['id', 'userId', 'name', 'createdAt', 'updatedAt'],
       'WishlistItems': ['id', 'wishlistId', 'productId', 'createdAt', 'updatedAt'],
@@ -309,6 +309,147 @@ class SupabaseDatabase {
     }
   }
 
+  // Find with relations (complex JOIN queries)
+  // Note: Supabase PostgREST doesn't support arbitrary JOINs
+  // For complex queries, we fall back to direct SQL
+  async findWithRelations(conditions = {}, relations = [], options = {}) {
+    try {
+      // For complex JOIN queries, Supabase REST API is limited
+      // We need to use direct SQL for these cases
+      // Create a direct SQL connection for this query only
+      const postgres = require('postgres');
+      const connectionString = process.env.DATABASE_URL;
+      
+      if (!connectionString) {
+        throw new Error('DATABASE_URL is required for complex JOIN queries');
+      }
+      
+      // Create a temporary connection for this query
+      const sql = postgres(connectionString, {
+        ssl: connectionString.includes('supabase.co') ? {
+          rejectUnauthorized: false
+        } : 'require',
+        max: 1,
+        connect_timeout: 10
+      });
+      
+      // Build base query
+      const { where, params } = this.buildWhereClauseForSQL(conditions.where || conditions);
+      const orderBy = this.buildOrderByForSQL(options.order);
+      const limitOffset = this.buildLimitOffsetForSQL(options.limit, options.offset);
+
+      // Build JOIN clauses
+      const joins = relations.map(rel => {
+        if (rel.type === 'LEFT_JOIN') {
+          return `LEFT JOIN "${rel.table}" ON "${this.tableName}"."${rel.localKey}" = "${rel.table}"."${rel.foreignKey}"`;
+        }
+        if (rel.type === 'INNER_JOIN') {
+          return `INNER JOIN "${rel.table}" ON "${this.tableName}"."${rel.localKey}" = "${rel.table}"."${rel.foreignKey}"`;
+        }
+        return '';
+      }).filter(Boolean).join(' ');
+
+      const orderByClause = orderBy ? `ORDER BY ${orderBy}` : '';
+      const query = `SELECT * FROM "${this.tableName}" ${joins} ${where} ${orderByClause} ${limitOffset.sql}`;
+      
+      const result = await sql.unsafe(query, [...params, ...limitOffset.params]);
+      
+      // Close the temporary connection
+      await sql.end();
+      
+      return result;
+    } catch (error) {
+      logger.error(`Error in findWithRelations for ${this.tableName}:`, error);
+      throw error;
+    }
+  }
+
+  // Helper methods for SQL building (used by findWithRelations)
+  buildWhereClauseForSQL(conditions = {}) {
+    if (!conditions || Object.keys(conditions).length === 0) {
+      return { where: '', params: [] };
+    }
+
+    const clauses = [];
+    const params = [];
+
+    for (const [key, value] of Object.entries(conditions)) {
+      this.validateColumnName(key);
+
+      if (value === null || value === undefined) {
+        clauses.push(`"${key}" IS NULL`);
+      } else if (Array.isArray(value)) {
+        const placeholders = value.map(() => `$${params.length + 1}`).join(', ');
+        clauses.push(`"${key}" IN (${placeholders})`);
+        params.push(...value);
+      } else {
+        clauses.push(`"${key}" = $${params.length + 1}`);
+        params.push(value);
+      }
+    }
+
+    return {
+      where: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '',
+      params
+    };
+  }
+
+  buildOrderByForSQL(orderBy) {
+    if (!orderBy) return '';
+
+    if (typeof orderBy === 'string') {
+      const match = orderBy.trim().match(/^(\w+)\s+(ASC|DESC)$/i);
+      if (match) {
+        const [, column, direction] = match;
+        this.validateColumnName(column);
+        return `"${column}" ${direction.toUpperCase()}`;
+      }
+    }
+
+    if (Array.isArray(orderBy)) {
+      const clauses = orderBy.map(clause => {
+        if (typeof clause === 'string') {
+          const match = clause.trim().match(/^(\w+)\s+(ASC|DESC)$/i);
+          if (match) {
+            const [, column, direction] = match;
+            this.validateColumnName(column);
+            return `"${column}" ${direction.toUpperCase()}`;
+          }
+        }
+        return '';
+      }).filter(Boolean);
+
+      return clauses.length > 0 ? clauses.join(', ') : '';
+    }
+
+    return '';
+  }
+
+  buildLimitOffsetForSQL(limit, offset) {
+    const parts = [];
+    const params = [];
+
+    if (limit) {
+      const limitNum = parseInt(limit);
+      if (isNaN(limitNum) || !isFinite(limitNum) || limitNum < 0 || limitNum > 10000) {
+        throw new Error('Invalid limit value');
+      }
+      parts.push(`LIMIT $${params.length + 1}`);
+      params.push(limitNum);
+    }
+
+    if (offset) {
+      const offsetNum = parseInt(offset);
+      if (isNaN(offsetNum) || !isFinite(offsetNum) || offsetNum < 0) {
+        throw new Error('Invalid offset value');
+      }
+      parts.push(`OFFSET $${params.length + 1}`);
+      params.push(offsetNum);
+    }
+
+    return { sql: parts.join(' '), params };
+  }
+
   // Bulk create
   async bulkCreate(dataArray) {
     try {
@@ -358,6 +499,168 @@ class SupabaseDatabase {
       return data;
     } catch (error) {
       logger.error(`Error in bulkCreate for ${this.tableName}:`, error);
+      throw error;
+    }
+  }
+
+  // Bulk update
+  async bulkUpdate(updates) {
+    try {
+      if (!Array.isArray(updates) || updates.length === 0) {
+        throw new Error('Updates array must be non-empty');
+      }
+
+      // For complex CASE-based bulk updates, use direct SQL
+      // Supabase REST API doesn't support complex CASE statements
+      const postgres = require('postgres');
+      const connectionString = process.env.DATABASE_URL;
+      
+      if (!connectionString) {
+        throw new Error('DATABASE_URL is required for bulk update operations');
+      }
+
+      // Create temporary connection for bulk update
+      const sql = postgres(connectionString, {
+        ssl: connectionString.includes('supabase.co') ? {
+          rejectUnauthorized: false
+        } : 'require',
+        max: 1,
+        connect_timeout: 10
+      });
+
+      // Each update should have { id, data: {...} }
+      const cases = {};
+      const params = [];
+
+      for (const update of updates) {
+        if (!update.id || !update.data) {
+          throw new Error('Each update must have id and data properties');
+        }
+
+        // Validate column names
+        const validData = {};
+        for (const [key, value] of Object.entries(update.data)) {
+          if (this.allowedColumns.includes(key)) {
+            validData[key] = value;
+          }
+        }
+
+        if (Object.keys(validData).length === 0) {
+          throw new Error('No valid columns to update');
+        }
+
+        // Build CASE statements
+        for (const [column, value] of Object.entries(validData)) {
+          if (!cases[column]) cases[column] = [];
+          cases[column].push(`WHEN "${this.primaryKey}" = $${params.length + 1} THEN $${params.length + 2}`);
+          params.push(update.id, value);
+        }
+      }
+
+      // Build query
+      const setClauses = Object.entries(cases).map(([column, whenClauses]) =>
+        `"${column}" = CASE ${whenClauses.join(' ')} END`
+      );
+
+      const ids = updates.map(u => u.id);
+      const idPlaceholders = ids.map((_, i) => `$${params.length + i + 1}`).join(', ');
+      params.push(...ids);
+
+      const query = `
+        UPDATE "${this.tableName}"
+        SET ${setClauses.join(', ')}, "updatedAt" = NOW()
+        WHERE "${this.primaryKey}" IN (${idPlaceholders})
+        RETURNING *
+      `;
+
+      const result = await sql.unsafe(query, params);
+      
+      // Close the temporary connection
+      await sql.end();
+      
+      return result;
+    } catch (error) {
+      logger.error(`Error in bulkUpdate for ${this.tableName}:`, error);
+      throw error;
+    }
+  }
+
+  // Aggregate queries
+  async aggregate(options = {}) {
+    try {
+      // For complex aggregations, use direct SQL
+      // Supabase REST API has limitations with complex GROUP BY and HAVING
+      const postgres = require('postgres');
+      const connectionString = process.env.DATABASE_URL;
+      
+      if (!connectionString) {
+        throw new Error('DATABASE_URL is required for aggregate operations');
+      }
+
+      // Create temporary connection for aggregate query
+      const sql = postgres(connectionString, {
+        ssl: connectionString.includes('supabase.co') ? {
+          rejectUnauthorized: false
+        } : 'require',
+        max: 1,
+        connect_timeout: 10
+      });
+
+      const { groupBy, having } = options;
+      const { where, params } = this.buildWhereClauseForSQL(options.where || {});
+
+      // Validate groupBy columns
+      if (groupBy) {
+        if (Array.isArray(groupBy)) {
+          groupBy.forEach(col => this.validateColumnName(col));
+        } else {
+          this.validateColumnName(groupBy);
+        }
+      }
+
+      // Build aggregation query
+      let selectClause = '*';
+      if (options.functions) {
+        const functions = [];
+        for (const [alias, func] of Object.entries(options.functions)) {
+          // Parse function like "COUNT(*)", "SUM(price)", etc.
+          const match = func.match(/^(\w+)\(([^)]+)\)$/);
+          if (match) {
+            const [, funcName, column] = match;
+            if (column !== '*') {
+              this.validateColumnName(column);
+              // Quote column name for PostgreSQL case sensitivity
+              functions.push(`${funcName}("${column}") as ${alias}`);
+            } else {
+              functions.push(`${funcName}(${column}) as ${alias}`);
+            }
+          }
+        }
+        if (functions.length > 0) {
+          selectClause = functions.join(', ');
+        }
+      }
+
+      let query = `SELECT ${selectClause} FROM "${this.tableName}" ${where}`;
+
+      if (groupBy) {
+        const groupCols = Array.isArray(groupBy) ? groupBy : [groupBy];
+        query += ` GROUP BY ${groupCols.map(col => `"${col}"`).join(', ')}`;
+      }
+
+      if (having) {
+        // Simple having clause
+        query += ` HAVING ${having}`;
+      }
+
+      const result = await sql.unsafe(query, params);
+      
+      // Close the temporary connection
+      await sql.end();
+      
+      return result;
+    } catch (error) {
+      logger.error(`Error in aggregate for ${this.tableName}:`, error);
       throw error;
     }
   }
