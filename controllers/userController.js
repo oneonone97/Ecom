@@ -93,8 +93,38 @@ exports.loginUser = async (req, res, next) => {
       });
     }
 
-    // Find user
-    const user = await db.users.findOne({ email });
+    // Normalize email (lowercase and trim)
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Find user with error handling for database issues
+    let user;
+    try {
+      user = await db.users.findOne({ email: normalizedEmail });
+    } catch (dbError) {
+      logger.error('Database error during login user lookup:', {
+        error: dbError.message,
+        errorName: dbError.name,
+        errorCode: dbError.code,
+        email: normalizedEmail,
+        stack: dbError.stack
+      });
+      
+      // Handle specific "Tenant or user not found" error from Supabase
+      if (dbError.message && dbError.message.includes('Tenant or user not found')) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            message: 'User not found',
+            statusCode: 404,
+            code: 'RESOURCE_NOT_FOUND'
+          }
+        });
+      }
+      
+      // Re-throw to be handled by error handler middleware
+      throw dbError;
+    }
+    
     if (!user) {
       return res.status(401).json({
         success: false,

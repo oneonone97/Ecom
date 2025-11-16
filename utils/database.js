@@ -1,8 +1,25 @@
 const sql = require('./postgres');
+const logger = require('./logger');
+
+// Check if Supabase is configured
+let useSupabase = false;
+let SupabaseDatabase = null;
+
+try {
+  if (process.env.SUPABASE_URL || process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    SupabaseDatabase = require('./supabaseDatabase');
+    useSupabase = true;
+    logger.info('Using Supabase client for database operations (better for serverless)');
+  }
+} catch (error) {
+  logger.warn('Supabase client not available, using direct SQL connection:', error.message);
+}
 
 /**
  * Simple Database Access Layer (replacing Sequelize models)
  * Provides basic CRUD operations for all tables with SQL injection protection
+ * 
+ * Uses Supabase client if configured (better for serverless), otherwise uses direct SQL
  */
 class Database {
   constructor(tableName, primaryKey = 'id', allowedColumns = null) {
@@ -400,18 +417,29 @@ class Database {
 }
 
 // Create instances for each table
-const db = {
-  users: new Database('Users'),
-  products: new Database('Products'),
-  categories: new Database('Categories'),
-  carts: new Database('Carts'),
-  cartItems: new Database('CartItems'),
-  orders: new Database('Orders'),
-  orderItems: new Database('OrderItems'),
-  reviews: new Database('Reviews'),
-  wishlists: new Database('Wishlists'),
-  wishlistItems: new Database('WishlistItems'),
-  refreshTokens: new Database('RefreshTokens'),
-};
+// Use Supabase if configured, otherwise use direct SQL
+let db;
+
+if (useSupabase && SupabaseDatabase) {
+  // Use Supabase client (better for serverless environments)
+  db = SupabaseDatabase;
+  logger.info('Database layer initialized with Supabase client');
+} else {
+  // Use direct SQL connection (fallback)
+  db = {
+    users: new Database('Users'),
+    products: new Database('Products'),
+    categories: new Database('Categories'),
+    carts: new Database('Carts'),
+    cartItems: new Database('CartItems'),
+    orders: new Database('Orders'),
+    orderItems: new Database('OrderItems'),
+    reviews: new Database('Reviews'),
+    wishlists: new Database('Wishlists'),
+    wishlistItems: new Database('WishlistItems'),
+    refreshTokens: new Database('RefreshTokens'),
+  };
+  logger.info('Database layer initialized with direct SQL connection');
+}
 
 module.exports = db;

@@ -91,6 +91,36 @@ const errorHandler = (err, req, res, next) => {
     errorCode = 'DATABASE_TIMEOUT';
   }
 
+  // Postgres.js errors (direct SQL errors)
+  // Check for PostgresError first by name, then by message pattern
+  else if (err.name === 'PostgresError' || (err.message && typeof err.message === 'string' && err.message.includes('Tenant or user not found'))) {
+    // Handle "Tenant or user not found" error first (common Supabase error)
+    if (err.message && err.message.includes('Tenant or user not found')) {
+      statusCode = 404;
+      message = 'User not found';
+      errorCode = 'RESOURCE_NOT_FOUND';
+    }
+    // Handle specific PostgreSQL error codes
+    else if (err.code === '23505') { // unique_violation
+      statusCode = 409;
+      message = 'Duplicate entry found';
+      errorCode = 'DUPLICATE_ENTRY';
+    } else if (err.code === '23503') { // foreign_key_violation
+      statusCode = 400;
+      message = 'Invalid reference';
+      errorCode = 'INVALID_REFERENCE';
+    } else if (err.code === '23502') { // not_null_violation
+      statusCode = 400;
+      message = 'Required field is missing';
+      errorCode = 'REQUIRED_FIELD_MISSING';
+    } else {
+      // Generic database error
+      statusCode = 500;
+      message = err.message || 'Database operation failed';
+      errorCode = 'DATABASE_ERROR';
+    }
+  }
+
   // Service layer errors (custom business logic errors)
   else if (err.message && typeof err.message === 'string') {
     // Handle common service layer error patterns

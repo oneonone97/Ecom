@@ -38,8 +38,43 @@ exports.protect = async (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     // Find user and validate existence and active status
-    const user = await db.users.findByPk(decoded.id);
-    
+    let user;
+    try {
+      user = await db.users.findByPk(decoded.id);
+    } catch (dbError) {
+      logger.error('Database error during user lookup:', {
+        error: dbError.message,
+        errorName: dbError.name,
+        errorCode: dbError.code,
+        userId: decoded.id,
+        stack: dbError.stack
+      });
+      
+      // Handle specific "Tenant or user not found" error from Supabase
+      if (dbError.message && dbError.message.includes('Tenant or user not found')) {
+        logger.logSecurity('Access attempt with token for non-existent user (Supabase error)', {
+          userId: decoded.id,
+          ip: req.ip || req.connection.remoteAddress,
+          userAgent: req.get('User-Agent'),
+          endpoint: req.originalUrl
+        });
+        return res.status(404).json({
+          success: false,
+          error: {
+            message: 'User not found',
+            statusCode: 404,
+            code: 'RESOURCE_NOT_FOUND'
+          }
+        });
+      }
+      
+      // Generic database error
+      return res.status(500).json({
+        success: false,
+        message: 'Database error occurred. Please try again.'
+      });
+    }
+
     if (!user) {
       logger.logSecurity('Access attempt with token for non-existent user', {
         userId: decoded.id,
@@ -47,9 +82,9 @@ exports.protect = async (req, res, next) => {
         userAgent: req.get('User-Agent'),
         endpoint: req.originalUrl
       });
-      return res.status(401).json({ 
-        success: false, 
-        message: 'User account no longer exists. Please log in again.' 
+      return res.status(401).json({
+        success: false,
+        message: 'User account no longer exists. Please log in again.'
       });
     }
 
