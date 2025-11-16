@@ -88,7 +88,8 @@ if (!useSupabase) {
           rejectUnauthorized: false
         } : 'require',
         max: 1,
-        connect_timeout: 10,
+        connect_timeout: 15, // Increased timeout for serverless
+        idle_timeout: 5,
         transform: {
           undefined: null
         }

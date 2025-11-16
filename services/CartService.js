@@ -10,69 +10,76 @@ class CartService extends BaseService {
 
   async getUserCart(userId) {
     try {
-      // Get cart with items and product details using JOIN
-      const cartData = await db.carts.findWithRelations(
-        { userId },
-        [
-          {
-            type: 'LEFT_JOIN',
-            table: 'CartItems',
-            localKey: 'id',
-            foreignKey: 'cartId'
-          },
-          {
-            type: 'LEFT_JOIN',
-            table: 'Products',
-            localKey: 'CartItems.productId',
-            foreignKey: 'id'
-          }
-        ]
-      );
+      // Get user's cart (avoid findWithRelations to prevent direct SQL connection issues)
+      let cart = await db.carts.findOne({ userId });
 
-      if (!cartData || cartData.length === 0) {
+      if (!cart) {
         // Create empty cart if none exists
-        const newCart = await db.carts.create({ userId });
+        cart = await db.carts.create({ userId });
         return {
-          ...newCart,
+          ...cart,
           items: [],
           totalItems: 0,
           totalPrice: 0
         };
       }
 
-      // Aggregate cart data
-      const cart = cartData[0];
+      // Get cart items using Supabase client (no direct SQL needed)
+      const cartItems = await db.cartItems.findAll({
+        where: { cartId: cart.id }
+      });
+
+      if (!cartItems || cartItems.length === 0) {
+        return {
+          ...cart,
+          items: [],
+          totalItems: 0,
+          totalPrice: 0
+        };
+      }
+
+      // Get product IDs from cart items
+      const productIds = cartItems.map(item => item.productId).filter(Boolean);
+
+      // Get products using Supabase client
+      // Use .in() for array of IDs (Supabase client supports this)
+      let products = [];
+      if (productIds.length > 0) {
+        // Supabase adapter handles array values with .in() automatically
+        products = await db.products.findAll({
+          where: { id: productIds }
+        });
+      }
+
+      // Create product map for quick lookup
+      const productMap = new Map();
+      products.forEach(product => {
+        productMap.set(product.id, product);
+      });
+
+      // Build items array with product details
       const items = [];
       let totalItems = 0;
       let totalPrice = 0;
 
-      // Group cart items by product
-      const itemMap = new Map();
-
-      cartData.forEach(row => {
-        if (row.productId && row.name) {
-          const itemKey = row.productId;
-          if (!itemMap.has(itemKey)) {
-            itemMap.set(itemKey, {
-              id: row.productId,
-              name: row.name,
-              price_paise: row.price_paise,
-              stock: row.stock,
-              imageUrl: row.imageUrl,
-              quantity: row.quantity || 0,
-              subtotal: 0
-            });
-          }
-          const item = itemMap.get(itemKey);
-          item.quantity += row.quantity || 0;
-          item.subtotal = item.quantity * (row.price_paise || 0);
+      for (const cartItem of cartItems) {
+        const product = productMap.get(cartItem.productId);
+        if (product) {
+          const subtotal = cartItem.quantity * (cartItem.price_paise || product.price_paise || 0);
+          items.push({
+            id: cartItem.id,
+            productId: product.id,
+            name: product.name,
+            price_paise: cartItem.price_paise || product.price_paise,
+            stock: product.stock,
+            imageUrl: product.image_url,
+            quantity: cartItem.quantity,
+            subtotal: subtotal
+          });
+          totalItems += cartItem.quantity;
+          totalPrice += subtotal;
         }
-      });
-
-      // Convert map to array and calculate totals
-      items.push(...itemMap.values());
-      totalItems = items.reduce((sum, item) => sum + item.quantity, 0);
-      totalPrice = items.reduce((sum, item) => sum + item.subtotal, 0);
+      }
 
       return {
         id: cart.id,

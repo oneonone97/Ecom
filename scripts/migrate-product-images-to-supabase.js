@@ -76,80 +76,159 @@ async function migrateProductImages() {
           continue;
         }
 
-        // Extract local file path
-        let localFilePath = null;
+        // Check if image_url is a placeholder - try to find images in ezyZip folder
+        const isPlaceholder = !product.image_url || 
+            product.image_url === 'no-image.jpg' || 
+            product.image_url === 'placeholder.jpg' ||
+            (typeof product.image_url === 'string' && !product.image_url.includes('/') && !product.image_url.startsWith('http'));
 
-        // Handle different image URL formats
-        if (product.image_url.startsWith('http')) {
-          // Already a remote URL (like placeholder), skip migration
-          console.log(`     ⏭️  Remote URL detected, skipping: ${product.image_url.substring(0, 50)}...`);
-          skipped++;
-          continue;
-        } else if (product.image_url.startsWith('/products/')) {
-          // Frontend public path: /products/folder/filename.jpg
-          // Try multiple possible locations
-          const possiblePaths = [
-            path.join(__dirname, '../../myshopReact/my-project/public', product.image_url),
-            path.join(__dirname, '../uploads/products', product.image_url.replace('/products/', '')),
-            path.join(__dirname, '../uploads/products', product.image_url)
+        let imageFiles = [];
+        let ezyZipFolderPath = null;
+
+        // If placeholder, try to find images in ezyZip folder using product name
+        if (isPlaceholder && product.name) {
+          // Try multiple possible paths (from scripts folder, from root, etc.)
+          const possibleEzyZipPaths = [
+            path.join(__dirname, '../../ezyZip', product.name),  // From scripts folder
+            path.join(__dirname, '../ezyZip', product.name),     // Alternative
+            path.join(process.cwd(), 'ezyZip', product.name)      // From project root
           ];
-
-          for (const testPath of possiblePaths) {
+          
+          for (const testPath of possibleEzyZipPaths) {
             if (fs.existsSync(testPath)) {
-              localFilePath = testPath;
-              break;
+              try {
+                const files = fs.readdirSync(testPath);
+                imageFiles = files.filter(file => /\.(jpg|jpeg|png|webp)$/i.test(file)).sort();
+                if (imageFiles.length > 0) {
+                  ezyZipFolderPath = testPath;
+                  console.log(`     📁 Found ${imageFiles.length} images in ezyZip folder: ${product.name}`);
+                  break; // Found images, stop searching
+                }
+              } catch (error) {
+                console.log(`     ⚠️  Could not read ezyZip folder at ${testPath}: ${error.message}`);
+                continue; // Try next path
+              }
             }
           }
-        } else if (product.image_url.startsWith('products/')) {
-          // Products folder path: products/folder/filename.jpg
-          const possiblePaths = [
-            path.join(__dirname, '../../myshopReact/my-project/public', product.image_url),
-            path.join(__dirname, '../uploads/products', product.image_url.replace('products/', ''))
-          ];
-
-          for (const testPath of possiblePaths) {
-            if (fs.existsSync(testPath)) {
-              localFilePath = testPath;
-              break;
-            }
-          }
-        } else if (product.image_url.startsWith('/uploads/')) {
-          // Local upload path: /uploads/products/filename.jpg
-          localFilePath = path.join(__dirname, '..', product.image_url);
-        } else {
-          // Try local uploads directory
-          localFilePath = path.join(uploadsDir, product.image_url);
         }
 
-        if (!localFilePath || !fs.existsSync(localFilePath)) {
-          console.log(`     ❌ Local file not found: ${localFilePath || product.image_url}`);
+        // If no images found in ezyZip, try to find image from image_url
+        if (imageFiles.length === 0) {
+          // Handle different image URL formats
+          let localFilePath = null;
+
+          if (product.image_url && product.image_url.startsWith('http')) {
+            // Already a remote URL (like placeholder), skip migration
+            console.log(`     ⏭️  Remote URL detected, skipping: ${product.image_url.substring(0, 50)}...`);
+            skipped++;
+            continue;
+          } else if (product.image_url && product.image_url.startsWith('/products/')) {
+            // Frontend public path: /products/folder/filename.jpg
+            // Try multiple possible locations
+            const possiblePaths = [
+              path.join(__dirname, '../../myshopReact/my-project/public', product.image_url),
+              path.join(__dirname, '../uploads/products', product.image_url.replace('/products/', '')),
+              path.join(__dirname, '../uploads/products', product.image_url)
+            ];
+
+            for (const testPath of possiblePaths) {
+              if (fs.existsSync(testPath)) {
+                localFilePath = testPath;
+                break;
+              }
+            }
+          } else if (product.image_url && product.image_url.startsWith('products/')) {
+            // Products folder path: products/folder/filename.jpg
+            const possiblePaths = [
+              path.join(__dirname, '../../myshopReact/my-project/public', product.image_url),
+              path.join(__dirname, '../uploads/products', product.image_url.replace('products/', ''))
+            ];
+
+            for (const testPath of possiblePaths) {
+              if (fs.existsSync(testPath)) {
+                localFilePath = testPath;
+                break;
+              }
+            }
+          } else if (product.image_url && product.image_url.startsWith('/uploads/')) {
+            // Local upload path: /uploads/products/filename.jpg
+            localFilePath = path.join(__dirname, '..', product.image_url);
+          } else if (product.image_url) {
+            // Try local uploads directory
+            localFilePath = path.join(uploadsDir, product.image_url);
+          }
+
+          if (localFilePath && fs.existsSync(localFilePath)) {
+            imageFiles = [path.basename(localFilePath)];
+            ezyZipFolderPath = path.dirname(localFilePath);
+          }
+        }
+
+        // If still no images found, skip this product
+        if (imageFiles.length === 0) {
+          console.log(`     ⚠️  No images found for: ${product.name}`);
           errors++;
           continue;
         }
 
-        // Read the image file
-        console.log(`     📁 Reading file: ${path.basename(localFilePath)}`);
-        const fileBuffer = fs.readFileSync(localFilePath);
-        const fileSizeKB = (fileBuffer.length / 1024).toFixed(2);
+        // Upload all images to Supabase
+        let mainImageUrl = null;
+        const uploadedImages = [];
 
-        // Determine MIME type from file extension
-        const fileExtension = path.extname(localFilePath).toLowerCase();
-        const mimeType = fileExtension === '.png' ? 'image/png' :
-                        fileExtension === '.gif' ? 'image/gif' :
-                        fileExtension === '.webp' ? 'image/webp' : 'image/jpeg';
+        for (let i = 0; i < imageFiles.length; i++) {
+          const imageFile = imageFiles[i];
+          const imagePath = path.join(ezyZipFolderPath, imageFile);
+          
+          if (!fs.existsSync(imagePath)) {
+            console.log(`     ⚠️  Image file not found: ${imagePath}`);
+            continue;
+          }
 
-        // Generate Supabase file path
-        const filePath = `products/${product.id}/main${fileExtension}`;
+          try {
+            // Read the image file
+            const fileBuffer = fs.readFileSync(imagePath);
+            const fileSizeKB = (fileBuffer.length / 1024).toFixed(2);
 
-        // Upload to Supabase
-        console.log(`     ☁️  Uploading to Supabase (${fileSizeKB} KB)...`);
-        const publicUrl = await uploadImage(fileBuffer, bucketName, filePath, mimeType);
+            // Determine MIME type from file extension
+            const fileExtension = path.extname(imageFile).toLowerCase();
+            const mimeType = fileExtension === '.png' ? 'image/png' :
+                            fileExtension === '.gif' ? 'image/gif' :
+                            fileExtension === '.webp' ? 'image/webp' : 'image/jpeg';
 
-        // Update database with new URL
-        await db.products.update(product.id, { image_url: publicUrl });
+            // Generate Supabase file path
+            // Main image: products/{id}/main.jpg
+            // Gallery images: products/{id}/gallery/{index}.jpg
+            const fileName = i === 0 ? `main${fileExtension}` : `gallery/${i}${fileExtension}`;
+            const filePath = `products/${product.id}/${fileName}`;
 
-        console.log(`     ✅ Migrated: ${publicUrl.substring(0, 60)}...`);
-        migrated++;
+            // Upload to Supabase
+            if (i === 0) {
+              console.log(`     ☁️  Uploading main image to Supabase (${fileSizeKB} KB)...`);
+            } else {
+              console.log(`     ☁️  Uploading gallery image ${i + 1}/${imageFiles.length} (${fileSizeKB} KB)...`);
+            }
+            
+            const publicUrl = await uploadImage(fileBuffer, bucketName, filePath, mimeType);
+            uploadedImages.push(publicUrl);
+
+            // First image is the main image
+            if (i === 0) {
+              mainImageUrl = publicUrl;
+            }
+          } catch (error) {
+            console.log(`     ⚠️  Error uploading ${imageFile}: ${error.message}`);
+          }
+        }
+
+        // Update database with main image URL
+        if (mainImageUrl) {
+          await db.products.update(product.id, { image_url: mainImageUrl });
+          console.log(`     ✅ Migrated ${uploadedImages.length} image(s). Main: ${mainImageUrl.substring(0, 60)}...`);
+          migrated++;
+        } else {
+          console.log(`     ❌ Failed to upload any images for ${product.name}`);
+          errors++;
+        }
 
       } catch (error) {
         console.log(`     ❌ Error migrating ${product.name}: ${error.message}`);

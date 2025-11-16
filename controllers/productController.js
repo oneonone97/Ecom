@@ -466,7 +466,7 @@ exports.getCategories = async (req, res, next) => {
     // Bypassing cache for debugging
     const categories = await db.categories.findAll({
       where: { isActive: true },
-      orderBy: 'name ASC'
+      order: [['name', 'ASC']]
     });
 
     /*

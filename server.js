@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const serverless = require('serverless-http');
+const path = require('path');
 const logger = require('./utils/logger');
 const requestLogger = require('./middleware/requestLogger');
 const errorHandler = require('./middleware/errorHandler');
@@ -112,10 +113,13 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Serve static files from the 'public' directory
 app.use(express.static('public'));
 
+// Serve ezyZip product images
+// This allows frontend to access images at /products/ezyZip/PRODUCT_NAME/image.jpg
+app.use('/products/ezyZip', express.static(path.join(__dirname, 'ezyZip')));
+
 // Serve uploaded files from the 'uploads' directory
 // Note: In serverless environments, files in /tmp are ephemeral and not suitable for serving
 // For production serverless, use cloud storage (S3, Supabase Storage) instead
-const path = require('path');
 if (process.env.NODE_ENV !== 'production' && !isServerless) {
   app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 }

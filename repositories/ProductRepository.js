@@ -235,6 +235,7 @@ class ProductRepository {
 
   /**
    * Enrich products with image gallery
+   * Handles both Supabase Storage URLs and local file paths
    */
   enrichWithImageGallery(products) {
     if (!products) return null;
@@ -244,34 +245,79 @@ class ProductRepository {
         return products.map(product => {
           try {
             const gallery = getImageGallery(product);
+            
+            // Ensure image_url is included in the response
+            // Handle placeholder values like "no-image.jpg"
+            let imageUrl = product.image_url || product.imageUrl || gallery?.main;
+            
+            // Convert placeholder values to proper placeholder URL
+            if (!imageUrl || 
+                imageUrl === 'no-image.jpg' || 
+                imageUrl === 'placeholder.jpg' ||
+                (typeof imageUrl === 'string' && !imageUrl.includes('/') && !imageUrl.startsWith('http'))) {
+              imageUrl = '/placeholder.jpg';
+            }
+            
             return {
               ...product,
-              image_gallery: gallery?.gallery || [],
-              images: gallery || {}
+              image_url: imageUrl, // Ensure image_url is always present and valid
+              image_gallery: gallery?.gallery || [imageUrl].filter(Boolean),
+              images: gallery || {
+                main: imageUrl,
+                thumbnail: imageUrl,
+                gallery: [imageUrl].filter(Boolean)
+              }
             };
           } catch (error) {
             logger.warn(`Error enriching product ${product.id} with images:`, error.message);
+            const imageUrl = product.image_url || product.imageUrl;
             return {
               ...product,
-              image_gallery: [],
-              images: {}
+              image_url: imageUrl,
+              image_gallery: imageUrl ? [imageUrl] : [],
+              images: {
+                main: imageUrl || '/placeholder.jpg',
+                thumbnail: imageUrl || '/placeholder.jpg',
+                gallery: imageUrl ? [imageUrl] : ['/placeholder.jpg']
+              }
             };
           }
         });
       } else {
         try {
           const gallery = getImageGallery(products);
+          let imageUrl = products.image_url || products.imageUrl || gallery?.main;
+          
+          // Convert placeholder values to proper placeholder URL
+          if (!imageUrl || 
+              imageUrl === 'no-image.jpg' || 
+              imageUrl === 'placeholder.jpg' ||
+              (typeof imageUrl === 'string' && !imageUrl.includes('/') && !imageUrl.startsWith('http'))) {
+            imageUrl = '/placeholder.jpg';
+          }
+          
           return {
             ...products,
-            image_gallery: gallery?.gallery || [],
-            images: gallery || {}
+            image_url: imageUrl, // Ensure image_url is always present and valid
+            image_gallery: gallery?.gallery || [imageUrl].filter(Boolean),
+            images: gallery || {
+              main: imageUrl,
+              thumbnail: imageUrl,
+              gallery: [imageUrl].filter(Boolean)
+            }
           };
         } catch (error) {
           logger.warn(`Error enriching product ${products.id} with images:`, error.message);
+          const imageUrl = products.image_url || products.imageUrl;
           return {
             ...products,
-            image_gallery: [],
-            images: {}
+            image_url: imageUrl,
+            image_gallery: imageUrl ? [imageUrl] : [],
+            images: {
+              main: imageUrl || '/placeholder.jpg',
+              thumbnail: imageUrl || '/placeholder.jpg',
+              gallery: imageUrl ? [imageUrl] : ['/placeholder.jpg']
+            }
           };
         }
       }

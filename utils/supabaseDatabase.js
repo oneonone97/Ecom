@@ -139,17 +139,18 @@ class SupabaseDatabase {
         }
       }
 
-      // Order by
-      if (options.order) {
-        if (typeof options.order === 'string') {
-          const match = options.order.trim().match(/^(\w+)\s+(ASC|DESC)$/i);
+      // Order by (also check for orderBy alias)
+      const orderOption = options.order || options.orderBy;
+      if (orderOption) {
+        if (typeof orderOption === 'string') {
+          const match = orderOption.trim().match(/^(\w+)\s+(ASC|DESC)$/i);
           if (match) {
             const [, column, direction] = match;
             this.validateColumnName(column);
             query = query.order(column, { ascending: direction.toUpperCase() === 'ASC' });
           }
-        } else if (Array.isArray(options.order)) {
-          for (const orderClause of options.order) {
+        } else if (Array.isArray(orderOption)) {
+          for (const orderClause of orderOption) {
             if (typeof orderClause === 'string') {
               const match = orderClause.trim().match(/^(\w+)\s+(ASC|DESC)$/i);
               if (match) {
@@ -343,24 +344,45 @@ class SupabaseDatabase {
       
       // If it's a Supabase direct connection (port 5432), try to use pooler (port 6543)
       // Only convert if not already using pooler
-      if (connectionString.includes('supabase.co') && 
-          connectionString.includes(':5432/') && 
-          !connectionString.includes('pooler.supabase.com')) {
-        // Try to convert to pooler URL
-        finalConnectionString = connectionString.replace(':5432/', ':6543/');
-        logger.info('Using Supabase pooler for findWithRelations', {
-          original: connectionString.substring(0, 50) + '...',
-          pooler: finalConnectionString.substring(0, 50) + '...'
-        });
+      if (connectionString.includes('supabase.co')) {
+        // Check if it's a direct connection (db.*.supabase.co:5432)
+        if (connectionString.includes('db.') && connectionString.includes(':5432/') && 
+            !connectionString.includes('pooler.supabase.com')) {
+          // Convert to pooler URL format
+          // Format: postgresql://postgres.[PROJECT]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres
+          // Or simpler: change port from 5432 to 6543 and hostname
+          const match = connectionString.match(/@db\.([^.]+)\.supabase\.co:5432\//);
+          if (match) {
+            const projectRef = match[1];
+            // Try to extract region from connection string or use default
+            // For now, just change port - pooler might work on same hostname with different port
+            finalConnectionString = connectionString.replace(':5432/', ':6543/');
+            logger.info('Using Supabase pooler for findWithRelations', {
+              original: connectionString.substring(0, 60) + '...',
+              pooler: finalConnectionString.substring(0, 60) + '...'
+            });
+          }
+        }
       }
       
       // Create a temporary connection for this query
+      // Log connection attempt for debugging
+      logger.info('Creating direct SQL connection for findWithRelations', {
+        usingPooler: finalConnectionString.includes('pooler.supabase.com'),
+        port: finalConnectionString.match(/:(\d+)\//)?.[1] || 'unknown',
+        hostname: finalConnectionString.match(/@([^:]+):/)?.[1] || 'unknown'
+      });
+      
       const sql = postgres(finalConnectionString, {
         ssl: finalConnectionString.includes('supabase.co') ? {
           rejectUnauthorized: false
         } : 'require',
         max: 1,
-        connect_timeout: 10
+        connect_timeout: 15, // Increased timeout
+        idle_timeout: 5, // Close quickly
+        transform: {
+          undefined: null
+        }
       });
       
       // Handle both formats: { where: {...} } and direct conditions
@@ -393,6 +415,23 @@ class SupabaseDatabase {
       return result;
     } catch (error) {
       logger.error(`Error in findWithRelations for ${this.tableName}:`, error);
+      
+      // If it's a connection error, provide helpful message
+      if (error.message && error.message.includes('Tenant or user not found')) {
+        const isPooler = connectionString?.includes('pooler.supabase.com');
+        logger.error('Direct SQL connection failed with "Tenant or user not found"', {
+          error: error.message,
+          usingPooler: isPooler,
+          connectionString: connectionString ? `${connectionString.substring(0, 50)}...` : 'not set',
+          suggestion: isPooler 
+            ? 'Pooler URL is correct but connection failed. Check: 1) Pooler is enabled in Supabase Dashboard, 2) Password is correct and URL-encoded, 3) Project is active'
+            : 'Ensure DATABASE_URL uses pooler URL (port 6543) or connection pooler is enabled'
+        });
+        
+        // Provide a more helpful error message
+        throw new Error(`Database connection failed: ${isPooler ? 'Pooler connection failed. Please verify pooler is enabled in Supabase Dashboard → Settings → Database → Connection Pooling' : 'Use pooler URL (port 6543) instead of direct connection (port 5432)'}`);
+      }
+      
       throw error;
     }
   }
